@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="robots" content="noindex">
+  <title>Watchtower · HOLDFAST</title>
+  <style>{{STYLE}}</style>
+</head>
+<body class="page-watch">
+  <header class="topbar">
+    <div class="topbar__inner">
+      <div class="topbar__lead">
+        <span class="brand brand--sm" aria-label="HOLDFAST home">
+          <span class="brand__glyph" aria-hidden="true">
+            <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <linearGradient id="hf-shield-sm" x1="8" y1="4" x2="40" y2="44" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#818CF8"/>
+                  <stop offset="1" stop-color="#4F46E5"/>
+                </linearGradient>
+              </defs>
+              <path d="M24 4 8 9.5V22c0 11 7 17.4 16 21.5C33 39.4 40 33 40 22V9.5L24 4Z" fill="url(#hf-shield-sm)"/>
+              <rect x="20" y="19" width="8" height="13" rx="1" fill="#fff" fill-opacity="0.92"/>
+              <path d="M20 19v-2.5a4 4 0 0 1 8 0V19" stroke="#fff" stroke-width="2" stroke-opacity="0.92" fill="none"/>
+            </svg>
+          </span>
+          <span class="brand__word">HOLDFAST</span>
+        </span>
+        <span class="topbar__sep" aria-hidden="true"></span>
+        <span class="topbar__title">Watchtower</span>
+      </div>
+      <div class="topbar__right">{{USERBOX}}</div>
+    </div>
+  </header>
+
+  <main class="console">
+    <div class="console__head">
+      <h1>Audit timeline</h1>
+      <p class="muted">Tamper-evident, hash-chained record of every security-relevant action across the keep.</p>
+    </div>
+
+    <section class="integ {{BADGE_CLASS}}" role="status" aria-live="polite">
+      <span class="integ__icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 6v6c0 5 3.4 8.4 8 10 4.6-1.6 8-5 8-10V6l-8-3Z"/><path d="m9 12 2 2 4-4"/></svg>
+      </span>
+      <div class="integ__body">
+        <div class="integ__title">Chain integrity</div>
+        <div class="integ__text">{{BADGE_TEXT}}</div>
+      </div>
+    </section>
+
+    <section class="counts">
+      <div class="counts__total">
+        <span class="counts__n">{{TOTAL}}</span>
+        <span class="counts__label">events recorded</span>
+      </div>
+      <div class="counts__sevs">{{SEVERITY_PILLS}}</div>
+    </section>
+
+    <section class="card checkpoints">
+      <div class="checkpoints__head">
+        <div>
+          <h2>Merkle checkpoints</h2>
+          <p class="muted">RFC6962-style roots over the chain prefix — a fast, externally-anchorable tamper-evidence summary. A checkpoint catches a rewrite below its <code>seq</code> even one the live chain re-links cleanly.</p>
+        </div>
+        {{CHECKPOINT_FORM}}
+      </div>
+      <div class="table-scroll">
+        <table class="timeline checkpoints__table">
+          <thead>
+            <tr>
+              <th class="c-time">Sealed (UTC)</th>
+              <th class="c-seq">Up to seq</th>
+              <th class="c-root">Merkle root</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{CHECKPOINT_ROWS}}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <form class="filterbar" method="get" action="">
+        <div class="filterbar__field">
+          <label for="f-actor">Actor</label>
+          <input id="f-actor" type="text" name="actor" value="{{F_ACTOR}}" placeholder="e.g. u_admin" autocomplete="off">
+        </div>
+        <div class="filterbar__field">
+          <label for="f-action">Action</label>
+          <input id="f-action" type="text" name="action" value="{{F_ACTION}}" placeholder="e.g. login.success" autocomplete="off">
+        </div>
+        <div class="filterbar__field filterbar__field--grow">
+          <label for="f-q">Search</label>
+          <input id="f-q" type="text" name="q" value="{{F_Q}}" placeholder="action / target / detail contains…" autocomplete="off">
+        </div>
+        <div class="filterbar__field">
+          <label for="f-since">Since (epoch ms)</label>
+          <input id="f-since" type="text" name="since" value="{{F_SINCE}}" placeholder="optional" autocomplete="off" inputmode="numeric">
+        </div>
+        <div class="filterbar__actions">
+          <button class="btn btn-primary" type="submit">Filter</button>
+          <a class="btn btn-secondary" href="?">Reset</a>
+        </div>
+      </form>
+
+      <div class="table-meta">{{SHOWING}}</div>
+      <div class="table-scroll">
+        <table class="timeline">
+          <thead>
+            <tr>
+              <th class="c-time">Time (UTC)</th>
+              <th class="c-seq">Seq</th>
+              <th>Severity</th>
+              <th class="c-actor">Actor</th>
+              <th class="c-action">Action</th>
+              <th class="c-target">Target</th>
+              <th class="c-detail">Detail</th>
+              <th class="c-source">Source</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{ROWS}}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <p class="site-foot">HOLDFAST Watchtower · append-only audit spine · <code>GET /api/verify</code> recomputes the full chain</p>
+  </main>
+</body>
+</html>

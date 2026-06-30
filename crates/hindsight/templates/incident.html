@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>{{TITLE}} · Hindsight</title>
+  <style>{{CSS}}</style>
+</head>
+<body class="page-app">
+{{TOPBAR}}
+<main class="shell">
+  <a class="back-link" href="/">&larr; All incidents</a>
+  <div class="shell__head">
+    <div>
+      <h1 class="shell__title">{{TITLE}} {{STATUS_BADGE}}</h1>
+      <p class="shell__sub">{{META}}</p>
+    </div>
+  </div>
+  {{STATUS_CHIPS}}
+  <div class="grid">
+    <section class="panel panel--timeline" aria-label="Evidence timeline">
+      <h2 class="panel__title">Evidence</h2>
+      <div class="tl">{{TIMELINE}}</div>
+    </section>
+    <aside class="rail">
+      <section class="panel" aria-label="Notes">
+        <h2 class="panel__title">Notes</h2>
+        <div class="notes" data-incident="{{INCIDENT_ID}}">{{NOTES}}</div>
+        {{NOTE_FORM}}
+      </section>
+    </aside>
+  </div>
+</main>
+</body>
+</html>

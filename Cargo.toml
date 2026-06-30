@@ -1,0 +1,26 @@
+[package]
+name = "sentinel"
+version = "0.1.0"
+edition = "2021"
+description = "Sentinel — one deployable hosting the HOLDFAST audit/RCA surfaces behind a Host-based vhost demux: the Watchtower tamper-evident audit spine (audit.w33d.xyz + internal watchtower:8500) plus the Hindsight read-only RCA correlator (rca.w33d.xyz). The two crates are vendored and reused verbatim; the compose service stays named `watchtower` so the estate-wide audit address watchtower:8500 is unchanged."
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "sentinel"
+path = "src/main.rs"
+
+[dependencies]
+# The two surfaces, vendored as path-dep library crates and reused VERBATIM (schema, routes,
+# templates, tests unchanged). Sentinel only adds the vhost demux. Watchtower stays the audit
+# spine every service POSTs to at watchtower:8500/events; Hindsight is a read-only RCA correlator
+# (it consumes Watchtower audit + Sift logs + Vitals metrics, writes only its own incidents/notes).
+watchtower = { path = "crates/watchtower" }
+hindsight = { path = "crates/hindsight" }
+
+axum = "0.8"
+# `net`/`io-util` back the dependency-free `healthcheck` subcommand's loopback probe.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util"] }
+# `ServiceExt::oneshot` drives the chosen per-surface Router for one request inside the demux.
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Hindsight · HOLDFAST</title>
+  <style>{{CSS}}</style>
+</head>
+<body class="page-app">
+{{TOPBAR}}
+<main class="shell">
+  <div class="shell__head">
+    <div>
+      <h1 class="shell__title">Incident Timeline</h1>
+      <p class="shell__sub">Correlated evidence from Watchtower, Sift, and Vitals · {{WINDOW_LABEL}}</p>
+    </div>
+    <nav class="wtabs" aria-label="Timeline window">{{WINDOW_TABS}}</nav>
+  </div>
+  {{STATUS_CHIPS}}
+  <div class="grid">
+    <section class="panel panel--timeline" aria-label="Merged timeline">
+      <h2 class="panel__title">Timeline</h2>
+      <div class="tl">{{TIMELINE}}</div>
+    </section>
+    <aside class="rail">
+      <section class="panel" aria-label="Open an incident">
+        <h2 class="panel__title">Open an incident</h2>
+        {{OPEN_FORM}}
+      </section>
+      <section class="panel" aria-label="Incidents">
+        <h2 class="panel__title">Incidents</h2>
+        <div class="inc-list">{{INCIDENTS}}</div>
+      </section>
+    </aside>
+  </div>
+</main>
+</body>
+</html>
