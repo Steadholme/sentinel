@@ -84,6 +84,54 @@
       </div>
     </section>
 
+    <section class="card alerts">
+      <div class="alerts__head">
+        <div>
+          <h2>Alert rules</h2>
+          <p class="muted">Exact-match rules mark future events by actor, action, source, or severity.</p>
+        </div>
+        {{ALERT_FORM}}
+      </div>
+      <div class="table-scroll">
+        <table class="timeline alerts__table">
+          <thead>
+            <tr>
+              <th class="c-time">Created (UTC)</th>
+              <th>Name</th>
+              <th>Actor</th>
+              <th>Action</th>
+              <th>Source</th>
+              <th>Severity</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{ALERT_RULE_ROWS}}
+          </tbody>
+        </table>
+      </div>
+      <div class="alerts__subhead">
+        <h3>Recent matches</h3>
+      </div>
+      <div class="table-scroll">
+        <table class="timeline alerts__table">
+          <thead>
+            <tr>
+              <th class="c-time">Matched (UTC)</th>
+              <th>Rule</th>
+              <th class="c-seq">Seq</th>
+              <th>Actor</th>
+              <th>Action</th>
+              <th>Severity</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{ALERT_MATCH_ROWS}}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
     <section class="card">
       <form class="filterbar" method="get" action="">
         <div class="filterbar__field">
@@ -94,6 +142,14 @@
           <label for="f-action">Action</label>
           <input id="f-action" type="text" name="action" value="{{F_ACTION}}" placeholder="e.g. login.success" autocomplete="off">
         </div>
+        <div class="filterbar__field">
+          <label for="f-source">Source</label>
+          <input id="f-source" type="text" name="source" value="{{F_SOURCE}}" placeholder="e.g. keystone" autocomplete="off">
+        </div>
+        <div class="filterbar__field">
+          <label for="f-severity">Severity</label>
+          <input id="f-severity" type="text" name="severity" value="{{F_SEVERITY}}" placeholder="e.g. critical" autocomplete="off">
+        </div>
         <div class="filterbar__field filterbar__field--grow">
           <label for="f-q">Search</label>
           <input id="f-q" type="text" name="q" value="{{F_Q}}" placeholder="action / target / detail contains…" autocomplete="off">
@@ -102,13 +158,28 @@
           <label for="f-since">Since (epoch ms)</label>
           <input id="f-since" type="text" name="since" value="{{F_SINCE}}" placeholder="optional" autocomplete="off" inputmode="numeric">
         </div>
+        <div class="filterbar__field">
+          <label for="f-until">Until (epoch ms)</label>
+          <input id="f-until" type="text" name="until" value="{{F_UNTIL}}" placeholder="optional" autocomplete="off" inputmode="numeric">
+        </div>
+        <div class="filterbar__field filterbar__field--limit">
+          <label for="f-limit">Limit</label>
+          <input id="f-limit" type="number" name="limit" value="{{F_LIMIT}}" placeholder="500" autocomplete="off" min="1" max="500">
+        </div>
         <div class="filterbar__actions">
           <button class="btn btn-primary" type="submit">Filter</button>
           <a class="btn btn-secondary" href="?">Reset</a>
         </div>
       </form>
 
-      <div class="table-meta">{{SHOWING}}</div>
+      <div class="table-meta">
+        <span>{{SHOWING}}</span>
+        <span class="table-meta__actions">
+          <a class="btn btn-secondary btn-sm" href="{{EXPORT_CSV}}">CSV</a>
+          <a class="btn btn-secondary btn-sm" href="{{EXPORT_JSON}}">JSON</a>
+          {{PAGINATION}}
+        </span>
+      </div>
       <div class="table-scroll">
         <table class="timeline">
           <thead>

@@ -13,10 +13,12 @@ use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::Html;
 
+use crate::alerts::{AlertMatch, AlertRule};
 use crate::auth::csrf_token;
 use crate::chain::{verify_chain, AuditEvent};
 use crate::handlers::events::EventsQuery;
 use crate::merkle::{merkle_root_upto, Checkpoint};
+use crate::store::EventFilter;
 use crate::AppState;
 
 /// Embedded design-system CSS (brand tokens shared with the Keystone login UI).
@@ -32,15 +34,26 @@ pub async fn dashboard(
 ) -> Html<String> {
     let filter_actor = query.actor.clone().unwrap_or_default();
     let filter_action = query.action.clone().unwrap_or_default();
+    let filter_source = query.source.clone().unwrap_or_default();
+    let filter_severity = query.severity.clone().unwrap_or_default();
     let filter_q = query.q.clone().unwrap_or_default();
     let filter_since = query.since.map(|s| s.to_string()).unwrap_or_default();
+    let filter_until = query.until.map(|s| s.to_string()).unwrap_or_default();
+    let filter_limit = query.limit.map(|s| s.to_string()).unwrap_or_default();
     let filter = query.into_filter();
 
     // Whole chain -> integrity badge + counts. Filtered slice -> the visible timeline.
     let all = state.store.all_events().await.unwrap_or_default();
     let report = verify_chain(&all);
     let rows = state.store.query(&filter).await.unwrap_or_default();
+    let total_matches = state.store.count(&filter).await.unwrap_or(rows.len());
     let checkpoints = state.store.all_checkpoints().await.unwrap_or_default();
+    let alert_rules = state.store.all_alert_rules().await.unwrap_or_default();
+    let alert_matches = state
+        .store
+        .recent_alert_matches(20)
+        .await
+        .unwrap_or_default();
 
     let email = header_str(&headers, "x-auth-email");
     let userbox = topbar_userbox(&email);
@@ -49,6 +62,8 @@ pub async fn dashboard(
     let severity_pills = severity_pills(&all);
     let timeline = timeline_rows(&rows);
     let checkpoint_rows = checkpoint_rows(&checkpoints, &all);
+    let alert_rule_rows = alert_rule_rows(&alert_rules);
+    let alert_match_rows = alert_match_rows(&alert_matches);
     // The seal form is shown only to a gateway-SSO identity; its CSRF token is keyed by the
     // ingest secret and bound to that identity (matching the POST /api/checkpoint check).
     let checkpoint_form = if email.is_empty() {
@@ -56,11 +71,24 @@ pub async fn dashboard(
     } else {
         seal_form(&csrf_token(&state.config.ingest_token, &email))
     };
+    let alert_form = if email.is_empty() {
+        String::new()
+    } else {
+        alert_form(&csrf_token(&state.config.ingest_token, &email))
+    };
+    let pagination = pagination_links(&filter, total_matches);
+    let export_csv = export_href(&filter, "csv");
+    let export_json = export_href(&filter, "json");
+    let first = if rows.is_empty() {
+        0
+    } else {
+        filter.offset + 1
+    };
+    let last = filter.offset + rows.len();
     let showing = format!(
-        "Showing {} of {} event{}",
-        rows.len(),
+        "Showing {first}-{last} of {total_matches} matching event{} · {} total",
+        if total_matches == 1 { "" } else { "s" },
         all.len(),
-        if all.len() == 1 { "" } else { "s" }
     );
 
     let html = TEMPLATE
@@ -72,11 +100,21 @@ pub async fn dashboard(
         .replace("{{SEVERITY_PILLS}}", &severity_pills)
         .replace("{{F_ACTOR}}", &esc(&filter_actor))
         .replace("{{F_ACTION}}", &esc(&filter_action))
+        .replace("{{F_SOURCE}}", &esc(&filter_source))
+        .replace("{{F_SEVERITY}}", &esc(&filter_severity))
         .replace("{{F_Q}}", &esc(&filter_q))
         .replace("{{F_SINCE}}", &esc(&filter_since))
+        .replace("{{F_UNTIL}}", &esc(&filter_until))
+        .replace("{{F_LIMIT}}", &esc(&filter_limit))
         .replace("{{SHOWING}}", &esc(&showing))
+        .replace("{{PAGINATION}}", &pagination)
+        .replace("{{EXPORT_CSV}}", &esc(&export_csv))
+        .replace("{{EXPORT_JSON}}", &esc(&export_json))
         .replace("{{CHECKPOINT_FORM}}", &checkpoint_form)
         .replace("{{CHECKPOINT_ROWS}}", &checkpoint_rows)
+        .replace("{{ALERT_FORM}}", &alert_form)
+        .replace("{{ALERT_RULE_ROWS}}", &alert_rule_rows)
+        .replace("{{ALERT_MATCH_ROWS}}", &alert_match_rows)
         .replace("{{ROWS}}", &timeline);
 
     Html(html)
@@ -92,7 +130,8 @@ fn topbar_userbox(email: &str) -> String {
         <rect x=\"3\" y=\"3\" width=\"7\" height=\"7\" rx=\"1.5\"/><rect x=\"14\" y=\"3\" width=\"7\" height=\"7\" rx=\"1.5\"/>\
         <rect x=\"3\" y=\"14\" width=\"7\" height=\"7\" rx=\"1.5\"/><rect x=\"14\" y=\"14\" width=\"7\" height=\"7\" rx=\"1.5\"/></svg>All apps</a>";
     let chip = if email.is_empty() {
-        "<span class=\"user-email\" title=\"Signed in as\">— (no gateway session)</span>".to_string()
+        "<span class=\"user-email\" title=\"Signed in as\">— (no gateway session)</span>"
+            .to_string()
     } else {
         let initial = email
             .chars()
@@ -122,6 +161,96 @@ fn seal_form(csrf: &str) -> String {
          </form>",
         csrf = esc(csrf),
     )
+}
+
+/// The "Create alert rule" form (POSTs to `/api/alert-rules` with the hidden CSRF token).
+fn alert_form(csrf: &str) -> String {
+    format!(
+        "<form class=\"alert-form\" method=\"post\" action=\"/api/alert-rules\">\
+           <input type=\"hidden\" name=\"csrf\" value=\"{csrf}\">\
+           <div class=\"alert-form__grid\">\
+             <label>Name<input type=\"text\" name=\"name\" placeholder=\"Login failures\" autocomplete=\"off\"></label>\
+             <label>Actor<input type=\"text\" name=\"actor\" placeholder=\"optional\" autocomplete=\"off\"></label>\
+             <label>Action<input type=\"text\" name=\"action\" placeholder=\"login.failure\" autocomplete=\"off\"></label>\
+             <label>Source<input type=\"text\" name=\"source\" placeholder=\"optional\" autocomplete=\"off\"></label>\
+             <label>Severity<input type=\"text\" name=\"severity\" placeholder=\"optional\" autocomplete=\"off\"></label>\
+           </div>\
+           <button class=\"btn btn-primary btn-sm\" type=\"submit\">Create rule</button>\
+         </form>",
+        csrf = esc(csrf),
+    )
+}
+
+/// Render alert rule rows. Empty -> placeholder row.
+fn alert_rule_rows(rules: &[AlertRule]) -> String {
+    if rules.is_empty() {
+        return "<tr><td class=\"empty\" colspan=\"6\">No alert rules configured.</td></tr>"
+            .to_string();
+    }
+    rules
+        .iter()
+        .map(|rule| {
+            format!(
+                "<tr>\
+                   <td class=\"c-time\"><time>{time}</time></td>\
+                   <td class=\"c-action\">{name}</td>\
+                   <td>{actor}</td>\
+                   <td>{action}</td>\
+                   <td>{source}</td>\
+                   <td><span class=\"sev {sevcls}\">{severity}</span></td>\
+                 </tr>",
+                time = esc(&fmt_ts(rule.created_at)),
+                name = esc(&rule.name),
+                actor = esc(&predicate(&rule.actor)),
+                action = esc(&predicate(&rule.action)),
+                source = esc(&predicate(&rule.source)),
+                sevcls = rule
+                    .severity
+                    .as_deref()
+                    .map(severity_class)
+                    .unwrap_or("sev-neutral"),
+                severity = esc(&predicate(&rule.severity)),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// Render recent alert match marker rows. Empty -> placeholder row.
+fn alert_match_rows(matches: &[AlertMatch]) -> String {
+    if matches.is_empty() {
+        return "<tr><td class=\"empty\" colspan=\"7\">No alert matches recorded.</td></tr>"
+            .to_string();
+    }
+    matches
+        .iter()
+        .map(|hit| {
+            format!(
+                "<tr>\
+                   <td class=\"c-time\"><time>{time}</time></td>\
+                   <td class=\"c-action\">{rule}</td>\
+                   <td class=\"c-seq\">{seq}</td>\
+                   <td class=\"c-actor\">{actor}</td>\
+                   <td class=\"c-action\">{action}</td>\
+                   <td><span class=\"sev {sevcls}\">{severity}</span></td>\
+                   <td class=\"c-source\">{source}</td>\
+                 </tr>",
+                time = esc(&fmt_ts(hit.matched_at)),
+                rule = esc(&hit.rule_name),
+                seq = hit.event_seq,
+                actor = esc(&hit.actor),
+                action = esc(&hit.action),
+                sevcls = severity_class(&hit.severity),
+                severity = esc(&severity_label(&hit.severity)),
+                source = esc(&hit.source),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn predicate(v: &Option<String>) -> String {
+    v.clone().unwrap_or_else(|| "*".to_string())
 }
 
 /// Render the checkpoint `<tr>` rows, each re-verified against the current log: recompute the
@@ -259,6 +388,91 @@ fn timeline_rows(rows: &[AuditEvent]) -> String {
         })
         .collect::<Vec<_>>()
         .join("")
+}
+
+/// Prev/next links for the filtered timeline.
+fn pagination_links(filter: &EventFilter, total: usize) -> String {
+    let mut links = Vec::new();
+    if filter.offset > 0 {
+        let prev = filter.offset.saturating_sub(filter.limit);
+        links.push(format!(
+            "<a class=\"btn btn-secondary btn-sm\" href=\"{href}\">Previous</a>",
+            href = esc(&events_href(filter, prev)),
+        ));
+    }
+    let next = filter.offset + filter.limit;
+    if next < total {
+        links.push(format!(
+            "<a class=\"btn btn-secondary btn-sm\" href=\"{href}\">Next</a>",
+            href = esc(&events_href(filter, next)),
+        ));
+    }
+    if links.is_empty() {
+        String::new()
+    } else {
+        format!("<div class=\"pagination\">{}</div>", links.join(""))
+    }
+}
+
+fn export_href(filter: &EventFilter, format: &str) -> String {
+    query_href("/api/events/export", filter, filter.offset, Some(format))
+}
+
+fn events_href(filter: &EventFilter, offset: usize) -> String {
+    query_href("", filter, offset, None)
+}
+
+fn query_href(base: &str, filter: &EventFilter, offset: usize, format: Option<&str>) -> String {
+    let mut params: Vec<(String, String)> = Vec::new();
+    push_param(&mut params, "actor", filter.actor.as_deref());
+    push_param(&mut params, "action", filter.action.as_deref());
+    push_param(&mut params, "source", filter.source.as_deref());
+    push_param(&mut params, "severity", filter.severity.as_deref());
+    push_i64(&mut params, "since", filter.since);
+    push_i64(&mut params, "until", filter.until);
+    push_param(&mut params, "q", filter.q.as_deref());
+    params.push(("limit".to_string(), filter.limit.to_string()));
+    if offset > 0 {
+        params.push(("offset".to_string(), offset.to_string()));
+    }
+    if let Some(format) = format {
+        params.push(("format".to_string(), format.to_string()));
+    }
+    if params.is_empty() {
+        return base.to_string();
+    }
+    let query = params
+        .into_iter()
+        .map(|(k, v)| format!("{}={}", pct_encode(&k), pct_encode(&v)))
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("{base}?{query}")
+}
+
+fn push_param(params: &mut Vec<(String, String)>, key: &str, value: Option<&str>) {
+    if let Some(value) = value.filter(|v| !v.is_empty()) {
+        params.push((key.to_string(), value.to_string()));
+    }
+}
+
+fn push_i64(params: &mut Vec<(String, String)>, key: &str, value: Option<i64>) {
+    if let Some(value) = value {
+        params.push((key.to_string(), value.to_string()));
+    }
+}
+
+fn pct_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 /// Map a severity string to a pill color class. Open-ended input is normalized; unknowns

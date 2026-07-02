@@ -2,16 +2,20 @@
 //!
 //! - `POST /events`     — append one event (bearer `AUDIT_INGEST_TOKEN`). The server assigns
 //!   `ts`, `seq`, `prev_hash`, and the committed `hash`; the producer only supplies content.
-//! - `GET  /api/verify` — recompute the whole chain -> `{ ok, count, head_hash, first_broken_seq? }`.
-//! - `GET  /api/events` — filtered, newest-first list (`?actor=&action=&since=&q=`).
+//! - `GET  /api/verify` — recompute the whole chain -> summary plus detailed issue scan.
+//! - `GET  /api/events` — filtered, newest-first list (`?actor=&action=&source=&severity=...`).
+//! - `GET  /api/events/search` — the same list with pagination metadata.
+//! - `GET  /api/events/export` — filtered CSV or JSON export.
 
 use axum::extract::{Query, State};
-use axum::http::HeaderMap;
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::require_ingest;
-use crate::chain::{verify_chain, AuditEvent, EventInput};
+use crate::chain::{verify_chain, verify_chain_issues, AuditEvent, EventInput, VerifyIssue};
+use crate::config::QUERY_LIMIT;
 use crate::error::AppError;
 use crate::store::EventFilter;
 use crate::{now_ms, AppState};
@@ -53,6 +57,9 @@ pub async fn ingest(
         source: body.source,
     };
     let event = state.store.append(input).await?;
+    if let Err(e) = state.store.record_alert_matches(&event, now_ms()).await {
+        tracing::warn!(error = %e, seq = event.seq, "alert match recording failed");
+    }
     Ok(Json(event))
 }
 
@@ -62,6 +69,8 @@ pub struct VerifyResponse {
     pub ok: bool,
     pub count: usize,
     pub head_hash: String,
+    pub checked_at: i64,
+    pub issues: Vec<VerifyIssue>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_broken_seq: Option<i64>,
 }
@@ -70,10 +79,13 @@ pub struct VerifyResponse {
 pub async fn verify(State(state): State<AppState>) -> Result<Json<VerifyResponse>, AppError> {
     let events = state.store.all_events().await?;
     let report = verify_chain(&events);
+    let issues = verify_chain_issues(&events);
     Ok(Json(VerifyResponse {
         ok: report.ok,
         count: report.count,
         head_hash: report.head_hash,
+        checked_at: now_ms(),
+        issues,
         first_broken_seq: report.first_broken_seq,
     }))
 }
@@ -83,8 +95,13 @@ pub async fn verify(State(state): State<AppState>) -> Result<Json<VerifyResponse
 pub struct EventsQuery {
     pub actor: Option<String>,
     pub action: Option<String>,
+    pub source: Option<String>,
+    pub severity: Option<String>,
     pub since: Option<i64>,
+    pub until: Option<i64>,
     pub q: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 impl EventsQuery {
@@ -97,14 +114,20 @@ impl EventsQuery {
         EventFilter {
             actor: clean(self.actor),
             action: clean(self.action),
+            source: clean(self.source),
+            severity: clean(self.severity),
             since: self.since,
+            until: self.until,
             q: clean(self.q),
+            limit: self.limit.unwrap_or(QUERY_LIMIT).clamp(1, QUERY_LIMIT),
+            offset: self.offset.unwrap_or(0),
             ..EventFilter::new()
         }
     }
 }
 
-/// `GET /api/events?actor=&action=&since=&q=` -> filtered, newest-first list.
+/// `GET /api/events?actor=&action=&source=&severity=&since=&until=&q=&limit=&offset=`
+/// -> filtered, newest-first list. The response stays a raw array for backward compatibility.
 pub async fn list(
     State(state): State<AppState>,
     Query(query): Query<EventsQuery>,
@@ -112,4 +135,123 @@ pub async fn list(
     let filter = query.into_filter();
     let events = state.store.query(&filter).await?;
     Ok(Json(events))
+}
+
+/// Paged search response for clients that need count/next-offset metadata.
+#[derive(Serialize)]
+pub struct EventsPage {
+    pub items: Vec<AuditEvent>,
+    pub total: usize,
+    pub limit: usize,
+    pub offset: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<usize>,
+}
+
+/// `GET /api/events/search?...` -> filtered events plus pagination metadata.
+pub async fn search(
+    State(state): State<AppState>,
+    Query(query): Query<EventsQuery>,
+) -> Result<Json<EventsPage>, AppError> {
+    let filter = query.into_filter();
+    let total = state.store.count(&filter).await?;
+    let items = state.store.query(&filter).await?;
+    let next = filter.offset + items.len();
+    Ok(Json(EventsPage {
+        next_offset: (next < total).then_some(next),
+        items,
+        total,
+        limit: filter.limit,
+        offset: filter.offset,
+    }))
+}
+
+/// Query string for `GET /api/events/export`.
+#[derive(Deserialize, Default)]
+pub struct ExportQuery {
+    #[serde(flatten)]
+    pub events: EventsQuery,
+    pub format: Option<String>,
+}
+
+/// `GET /api/events/export?format=csv|json&...` -> filtered export.
+pub async fn export(
+    State(state): State<AppState>,
+    Query(query): Query<ExportQuery>,
+) -> Result<Response, AppError> {
+    let format = query
+        .format
+        .as_deref()
+        .unwrap_or("csv")
+        .trim()
+        .to_lowercase();
+    let filter = query.events.into_filter();
+    let events = state.store.query(&filter).await?;
+
+    if format == "json" {
+        return Ok(Json(events).into_response());
+    }
+    if format != "csv" {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            [(header::CONTENT_TYPE, "application/json")],
+            Json(serde_json::json!({
+                "error": "bad_request",
+                "message": "format must be csv or json"
+            })),
+        )
+            .into_response());
+    }
+
+    let csv = events_csv(&events);
+    Ok((
+        [
+            (header::CONTENT_TYPE, "text/csv; charset=utf-8"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"watchtower-events.csv\"",
+            ),
+        ],
+        csv,
+    )
+        .into_response())
+}
+
+fn events_csv(events: &[AuditEvent]) -> String {
+    let mut out = "seq,ts,actor,action,target,severity,detail,source,prev_hash,hash\n".to_string();
+    for e in events {
+        csv_row(
+            &mut out,
+            &[
+                e.seq.to_string(),
+                e.ts.to_string(),
+                e.actor.clone(),
+                e.action.clone(),
+                e.target.clone(),
+                e.severity.clone(),
+                e.detail.clone(),
+                e.source.clone(),
+                e.prev_hash.clone(),
+                e.hash.clone(),
+            ],
+        );
+    }
+    out
+}
+
+fn csv_row(out: &mut String, fields: &[String]) {
+    for (idx, field) in fields.iter().enumerate() {
+        if idx > 0 {
+            out.push(',');
+        }
+        out.push('"');
+        for c in field.chars() {
+            if c == '"' {
+                out.push('"');
+            }
+            out.push(c);
+        }
+        out.push('"');
+    }
+    out.push('\n');
 }

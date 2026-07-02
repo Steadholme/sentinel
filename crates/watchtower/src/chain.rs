@@ -46,8 +46,15 @@ impl EventInput {
     /// committed `hash`. Called by the store inside its serialized-append critical section.
     pub fn seal(self, seq: i64, prev_hash: String) -> AuditEvent {
         let hash = hash_event(
-            seq, self.ts, &self.actor, &self.action, &self.target, &self.severity,
-            &self.detail, &self.source, &prev_hash,
+            seq,
+            self.ts,
+            &self.actor,
+            &self.action,
+            &self.target,
+            &self.severity,
+            &self.detail,
+            &self.source,
+            &prev_hash,
         );
         AuditEvent {
             seq,
@@ -87,8 +94,15 @@ impl AuditEvent {
     /// equals the stored [`AuditEvent::hash`].
     pub fn recompute_hash(&self) -> String {
         hash_event(
-            self.seq, self.ts, &self.actor, &self.action, &self.target, &self.severity,
-            &self.detail, &self.source, &self.prev_hash,
+            self.seq,
+            self.ts,
+            &self.actor,
+            &self.action,
+            &self.target,
+            &self.severity,
+            &self.detail,
+            &self.source,
+            &self.prev_hash,
         )
     }
 }
@@ -136,24 +150,25 @@ pub struct VerifyReport {
     pub first_broken_seq: Option<i64>,
 }
 
-/// Recompute and verify an entire chain. `events` MUST be ordered by `seq` ascending (as the
-/// store returns them). The first event that violates any invariant sets `first_broken_seq`
-/// and stops the walk; everything up to it is consistent.
-pub fn verify_chain(events: &[AuditEvent]) -> VerifyReport {
-    let mut running_prev = GENESIS_HASH_HEX.to_string();
-    let mut first_broken = None;
+/// One integrity issue found during a full-chain scan.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct VerifyIssue {
+    /// The stored event `seq` where the issue was observed.
+    pub seq: i64,
+    /// Machine-readable issue kind: `seq_gap`, `prev_hash_mismatch`, or `hash_mismatch`.
+    pub kind: &'static str,
+    /// The expected value for this invariant.
+    pub expected: String,
+    /// The stored or recomputed value that did not match.
+    pub actual: String,
+}
 
-    // `seq` is 1-based and contiguous, so the expected value is the (1-based) position.
-    for (expected_seq, event) in (1_i64..).zip(events.iter()) {
-        let seq_ok = event.seq == expected_seq;
-        let link_ok = event.prev_hash == running_prev;
-        let hash_ok = event.recompute_hash() == event.hash;
-        if !(seq_ok && link_ok && hash_ok) {
-            first_broken = Some(event.seq);
-            break;
-        }
-        running_prev = event.hash.clone();
-    }
+/// Recompute and verify an entire chain. `events` MUST be ordered by `seq` ascending (as the
+/// store returns them). The first event that violates any invariant sets `first_broken_seq`;
+/// use [`verify_chain_issues`] when a full issue list is needed.
+pub fn verify_chain(events: &[AuditEvent]) -> VerifyReport {
+    let issues = verify_chain_issues(events);
+    let first_broken = issues.first().map(|i| i.seq);
 
     let head_hash = events
         .last()
@@ -166,6 +181,47 @@ pub fn verify_chain(events: &[AuditEvent]) -> VerifyReport {
         head_hash,
         first_broken_seq: first_broken,
     }
+}
+
+/// Recompute and scan the whole chain, returning every invariant mismatch found.
+///
+/// The scan reports row-local content hash mismatches and adjacency/sequence breaks across the
+/// full ordered slice. It keeps walking after an issue so operators get a richer tamper report
+/// than the first failing row while [`verify_chain`] preserves the legacy first-break summary.
+pub fn verify_chain_issues(events: &[AuditEvent]) -> Vec<VerifyIssue> {
+    let mut running_prev = GENESIS_HASH_HEX.to_string();
+    let mut issues = Vec::new();
+
+    for (expected_seq, event) in (1_i64..).zip(events.iter()) {
+        if event.seq != expected_seq {
+            issues.push(VerifyIssue {
+                seq: event.seq,
+                kind: "seq_gap",
+                expected: expected_seq.to_string(),
+                actual: event.seq.to_string(),
+            });
+        }
+        if event.prev_hash != running_prev {
+            issues.push(VerifyIssue {
+                seq: event.seq,
+                kind: "prev_hash_mismatch",
+                expected: running_prev.clone(),
+                actual: event.prev_hash.clone(),
+            });
+        }
+        let recomputed = event.recompute_hash();
+        if recomputed != event.hash {
+            issues.push(VerifyIssue {
+                seq: event.seq,
+                kind: "hash_mismatch",
+                expected: recomputed,
+                actual: event.hash.clone(),
+            });
+        }
+        running_prev = event.hash.clone();
+    }
+
+    issues
 }
 
 #[cfg(test)]
@@ -253,6 +309,24 @@ mod tests {
         let report = verify_chain(&events);
         assert!(!report.ok);
         assert_eq!(report.first_broken_seq, Some(5));
+    }
+
+    #[test]
+    fn issue_scan_reports_all_invariant_mismatches() {
+        let mut events = build_chain(5);
+        events[1].detail = "changed".to_string();
+        events.remove(2);
+        let issues = verify_chain_issues(&events);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.seq == 2 && i.kind == "hash_mismatch"),
+            "content tamper is reported"
+        );
+        assert!(
+            issues.iter().any(|i| i.seq == 4 && i.kind == "seq_gap"),
+            "sequence gap is reported"
+        );
     }
 
     #[test]

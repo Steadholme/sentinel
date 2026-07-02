@@ -45,7 +45,13 @@ fn post_event(token: Option<&str>, json: Value) -> Request<Body> {
     b.body(Body::from(json.to_string())).unwrap()
 }
 
-async fn ingest_ok(state: &AppState, action: &str, actor: &str, severity: &str, detail: &str) -> Value {
+async fn ingest_ok(
+    state: &AppState,
+    action: &str,
+    actor: &str,
+    severity: &str,
+    detail: &str,
+) -> Value {
     let (status, v) = json_call(
         state,
         post_event(
@@ -53,6 +59,29 @@ async fn ingest_ok(state: &AppState, action: &str, actor: &str, severity: &str, 
             serde_json::json!({
                 "actor": actor, "action": action, "target": "keystone",
                 "severity": severity, "detail": detail, "source": "test"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "ingest should succeed: {v}");
+    v
+}
+
+async fn ingest_full(
+    state: &AppState,
+    action: &str,
+    actor: &str,
+    severity: &str,
+    detail: &str,
+    source: &str,
+) -> Value {
+    let (status, v) = json_call(
+        state,
+        post_event(
+            Some(DEFAULT_INGEST_TOKEN),
+            serde_json::json!({
+                "actor": actor, "action": action, "target": "keystone",
+                "severity": severity, "detail": detail, "source": source
             }),
         ),
     )
@@ -72,6 +101,8 @@ async fn appending_events_builds_a_verifiable_chain() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["ok"], true);
     assert_eq!(v["count"], 0);
+    assert!(v["checked_at"].as_i64().unwrap() > 0);
+    assert!(v["issues"].as_array().unwrap().is_empty());
     assert_eq!(
         v["head_hash"],
         "0000000000000000000000000000000000000000000000000000000000000000"
@@ -81,7 +112,14 @@ async fn appending_events_builds_a_verifiable_chain() {
     // Append N and confirm seq/prev_hash linkage as returned by the ingest endpoint.
     let mut prev = "0000000000000000000000000000000000000000000000000000000000000000".to_string();
     for i in 1..=25 {
-        let ev = ingest_ok(&state, "login.success", &format!("u_{i}"), "info", &format!("entry {i}")).await;
+        let ev = ingest_ok(
+            &state,
+            "login.success",
+            &format!("u_{i}"),
+            "info",
+            &format!("entry {i}"),
+        )
+        .await;
         assert_eq!(ev["seq"], i, "monotonic seq");
         assert_eq!(ev["prev_hash"], prev, "each event links the previous head");
         assert!(ev["ts"].as_i64().unwrap() > 0, "server-assigned ts");
@@ -107,10 +145,17 @@ async fn ingest_requires_the_bearer_token() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(resp.headers().get(header::WWW_AUTHENTICATE).unwrap(), "Bearer");
+    assert_eq!(
+        resp.headers().get(header::WWW_AUTHENTICATE).unwrap(),
+        "Bearer"
+    );
 
     // Wrong token -> 401.
-    let (status, _) = call(&state, post_event(Some("not-the-token"), serde_json::json!({ "action": "x" }))).await;
+    let (status, _) = call(
+        &state,
+        post_event(Some("not-the-token"), serde_json::json!({ "action": "x" })),
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     // Nothing was appended.
@@ -118,23 +163,66 @@ async fn ingest_requires_the_bearer_token() {
     assert_eq!(v["count"], 0);
 
     // Correct token -> 200.
-    let (status, _) = call(&state, post_event(Some(DEFAULT_INGEST_TOKEN), serde_json::json!({ "action": "x" }))).await;
+    let (status, _) = call(
+        &state,
+        post_event(
+            Some(DEFAULT_INGEST_TOKEN),
+            serde_json::json!({ "action": "x" }),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]
 async fn list_filters_by_q_actor_and_since() {
     let state = build_dev_state();
-    ingest_ok(&state, "login.success", "u_admin", "info", "password login from 10.0.0.4").await;
-    ingest_ok(&state, "login.failure", "u_bob", "warning", "bad password").await;
-    ingest_ok(&state, "token.issue", "u_admin", "info", "issued access token").await;
-    ingest_ok(&state, "cert.revoke", "u_admin", "critical", "revoked leaf serial 0badc0de").await;
+    ingest_full(
+        &state,
+        "login.success",
+        "u_admin",
+        "info",
+        "password login from 10.0.0.4",
+        "keystone",
+    )
+    .await;
+    ingest_full(
+        &state,
+        "login.failure",
+        "u_bob",
+        "warning",
+        "bad \"password\", check",
+        "keystone",
+    )
+    .await;
+    ingest_full(
+        &state,
+        "token.issue",
+        "u_admin",
+        "info",
+        "issued access token",
+        "keyward",
+    )
+    .await;
+    ingest_full(
+        &state,
+        "cert.revoke",
+        "u_admin",
+        "critical",
+        "revoked leaf serial 0badc0de",
+        "hindsight",
+    )
+    .await;
 
     // q = case-insensitive LIKE over action/target/detail.
     let (status, v) = json_call(&state, get("/api/events?q=PASSWORD")).await;
     assert_eq!(status, StatusCode::OK);
     let arr = v.as_array().unwrap();
-    assert_eq!(arr.len(), 2, "two events mention 'password' (case-insensitive)");
+    assert_eq!(
+        arr.len(),
+        2,
+        "two events mention 'password' (case-insensitive)"
+    );
 
     // q matches the action text too.
     let (_, v) = json_call(&state, get("/api/events?q=revoke")).await;
@@ -146,6 +234,14 @@ async fn list_filters_by_q_actor_and_since() {
     assert_eq!(arr.len(), 3);
     assert_eq!(arr[0]["action"], "cert.revoke", "newest first");
 
+    // source and severity exact filters.
+    let (_, v) = json_call(&state, get("/api/events?source=keystone")).await;
+    assert_eq!(v.as_array().unwrap().len(), 2);
+    let (_, v) = json_call(&state, get("/api/events?severity=critical")).await;
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["action"], "cert.revoke");
+
     // combined actor + q.
     let (_, v) = json_call(&state, get("/api/events?actor=u_admin&q=token")).await;
     assert_eq!(v.as_array().unwrap().len(), 1);
@@ -156,6 +252,39 @@ async fn list_filters_by_q_actor_and_since() {
     // a zero bound includes everything.
     let (_, v) = json_call(&state, get("/api/events?since=0")).await;
     assert_eq!(v.as_array().unwrap().len(), 4);
+    // until = ts upper bound; zero excludes every normal event timestamp.
+    let (_, v) = json_call(&state, get("/api/events?until=0")).await;
+    assert_eq!(v.as_array().unwrap().len(), 0);
+
+    // limit/offset page the backward-compatible array response.
+    let (_, v) = json_call(&state, get("/api/events?limit=2&offset=1")).await;
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["action"], "token.issue");
+    assert_eq!(arr[1]["action"], "login.failure");
+
+    // /api/events/search adds total/next metadata without changing /api/events shape.
+    let (_, v) = json_call(&state, get("/api/events/search?actor=u_admin&limit=2")).await;
+    assert_eq!(v["total"], 3);
+    assert_eq!(v["limit"], 2);
+    assert_eq!(v["offset"], 0);
+    assert_eq!(v["next_offset"], 2);
+    assert_eq!(v["items"].as_array().unwrap().len(), 2);
+
+    // CSV export uses the same filters and escapes quotes/commas.
+    let (status, bytes) = call(&state, get("/api/events/export?format=csv&q=PASSWORD")).await;
+    assert_eq!(status, StatusCode::OK);
+    let csv = String::from_utf8(bytes).unwrap();
+    assert!(csv.starts_with("seq,ts,actor,action,target,severity,detail,source,prev_hash,hash"));
+    assert!(csv.contains("\"bad \"\"password\"\", check\""));
+
+    let (status, v) = json_call(
+        &state,
+        get("/api/events/export?format=json&source=hindsight"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(v.as_array().unwrap().len(), 1);
 
     // empty params behave as absent (?actor= returns all).
     let (_, v) = json_call(&state, get("/api/events?actor=")).await;
@@ -177,11 +306,25 @@ async fn dashboard_renders_with_identity_and_integrity_badge() {
     let (status, bytes) = call(&state, req).await;
     assert_eq!(status, StatusCode::OK);
     let html = String::from_utf8(bytes).unwrap();
-    assert!(html.contains("admin@holdfast.local"), "shows signed-in email");
-    assert!(html.contains("/_gw/auth/logout"), "logout points at the gateway");
-    assert!(html.contains("integ-ok"), "green integrity badge for a valid chain");
+    assert!(
+        html.contains("admin@holdfast.local"),
+        "shows signed-in email"
+    );
+    assert!(
+        html.contains("/_gw/auth/logout"),
+        "logout points at the gateway"
+    );
+    assert!(
+        html.contains("integ-ok"),
+        "green integrity badge for a valid chain"
+    );
     assert!(html.contains("Verified"), "badge text");
     assert!(html.contains("login.success"), "timeline shows events");
+    assert!(html.contains("Alert rules"), "alert section rendered");
+    assert!(
+        html.contains("/api/events/export?"),
+        "export links rendered"
+    );
     // Producer-supplied text is HTML-escaped (no raw angle brackets in detail).
     assert!(html.contains("hello &lt;world&gt;"), "detail is escaped");
     assert!(!html.contains("hello <world>"), "no unescaped detail leaks");

@@ -19,6 +19,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use thiserror::Error;
 
+use crate::alerts::{make_alert_match, AlertMatch, AlertRule};
 use crate::chain::{AuditEvent, EventInput, GENESIS_HASH_HEX};
 use crate::config::QUERY_LIMIT;
 use crate::merkle::Checkpoint;
@@ -32,16 +33,21 @@ pub enum StoreError {
 
 /// Filters for `GET /api/events` and the dashboard timeline.
 ///
-/// `actor`/`action` are exact matches; `since` is `ts >= since`; `q` is a case-insensitive
-/// substring search over `action`/`target`/`detail` (the semantic-search seam for the later
-/// FusionDB hook). Results are newest-first (`seq` DESC), capped at [`EventFilter::limit`].
+/// `actor`/`action`/`source`/`severity` are exact matches; `since`/`until` bound `ts`; `q` is
+/// a case-insensitive substring search over the searchable event text (the semantic-search seam
+/// for the later FusionDB hook). Results are newest-first (`seq` DESC), capped at
+/// [`EventFilter::limit`] after skipping [`EventFilter::offset`].
 #[derive(Clone, Debug, Default)]
 pub struct EventFilter {
     pub actor: Option<String>,
     pub action: Option<String>,
+    pub source: Option<String>,
+    pub severity: Option<String>,
     pub since: Option<i64>,
+    pub until: Option<i64>,
     pub q: Option<String>,
     pub limit: usize,
+    pub offset: usize,
 }
 
 impl EventFilter {
@@ -66,16 +72,34 @@ impl EventFilter {
                 return false;
             }
         }
+        if let Some(source) = &self.source {
+            if &e.source != source {
+                return false;
+            }
+        }
+        if let Some(severity) = &self.severity {
+            if &e.severity != severity {
+                return false;
+            }
+        }
         if let Some(since) = self.since {
             if e.ts < since {
                 return false;
             }
         }
+        if let Some(until) = self.until {
+            if e.ts > until {
+                return false;
+            }
+        }
         if let Some(q) = &self.q {
             let needle = q.to_lowercase();
-            let hit = e.action.to_lowercase().contains(&needle)
+            let hit = e.actor.to_lowercase().contains(&needle)
+                || e.action.to_lowercase().contains(&needle)
                 || e.target.to_lowercase().contains(&needle)
-                || e.detail.to_lowercase().contains(&needle);
+                || e.detail.to_lowercase().contains(&needle)
+                || e.source.to_lowercase().contains(&needle)
+                || e.severity.to_lowercase().contains(&needle);
             if !hit {
                 return false;
             }
@@ -101,6 +125,9 @@ pub trait Store: Send + Sync {
     /// Filtered, newest-first, capped query for the API + dashboard timeline.
     async fn query(&self, filter: &EventFilter) -> Result<Vec<AuditEvent>, StoreError>;
 
+    /// Count all events matching the filter, ignoring `limit`/`offset`.
+    async fn count(&self, filter: &EventFilter) -> Result<usize, StoreError>;
+
     /// Persist a sealed Merkle [`Checkpoint`] (ADDED tamper-evidence summary; see
     /// [`crate::merkle`]). Idempotent on `id`: re-sealing an identical state is a no-op, so this
     /// is NOT a mutation of any existing row. The append-only chain is untouched.
@@ -108,6 +135,22 @@ pub trait Store: Send + Sync {
 
     /// Every stored checkpoint, ordered by `seq_hi` ascending.
     async fn all_checkpoints(&self) -> Result<Vec<Checkpoint>, StoreError>;
+
+    /// Persist a new alert rule. Idempotent on `id` and stored outside the audit chain.
+    async fn insert_alert_rule(&self, rule: AlertRule) -> Result<(), StoreError>;
+
+    /// Every stored alert rule, newest-first by creation time.
+    async fn all_alert_rules(&self) -> Result<Vec<AlertRule>, StoreError>;
+
+    /// Evaluate stored alert rules against one committed event and persist match markers.
+    async fn record_alert_matches(
+        &self,
+        event: &AuditEvent,
+        matched_at: i64,
+    ) -> Result<Vec<AlertMatch>, StoreError>;
+
+    /// Recent alert match markers, newest-first.
+    async fn recent_alert_matches(&self, limit: usize) -> Result<Vec<AlertMatch>, StoreError>;
 }
 
 // --------------------------------------------------------------------------------------
@@ -123,6 +166,10 @@ pub struct InMemoryStore {
     /// Sealed Merkle checkpoints. Separate lock from `events`: sealing/listing checkpoints never
     /// contends with the append critical section, and reads never block appends.
     checkpoints: Mutex<Vec<Checkpoint>>,
+    /// Alert rules are additive control-plane records; separate from the audit append lock.
+    alert_rules: Mutex<Vec<AlertRule>>,
+    /// Append-only alert match markers.
+    alert_matches: Mutex<Vec<AlertMatch>>,
 }
 
 impl InMemoryStore {
@@ -156,11 +203,17 @@ impl Store for InMemoryStore {
             .iter()
             .rev() // newest first
             .filter(|e| filter.matches(e))
+            .skip(filter.offset)
             .take(filter.limit)
             .cloned()
             .collect();
         out.shrink_to_fit();
         Ok(out)
+    }
+
+    async fn count(&self, filter: &EventFilter) -> Result<usize, StoreError> {
+        let events = self.events.lock().expect("events lock poisoned");
+        Ok(events.iter().filter(|e| filter.matches(e)).count())
     }
 
     async fn insert_checkpoint(&self, checkpoint: Checkpoint) -> Result<(), StoreError> {
@@ -179,6 +232,60 @@ impl Store for InMemoryStore {
             .expect("checkpoints lock poisoned")
             .clone();
         out.sort_by_key(|c| c.seq_hi);
+        Ok(out)
+    }
+
+    async fn insert_alert_rule(&self, rule: AlertRule) -> Result<(), StoreError> {
+        let mut rules = self.alert_rules.lock().expect("alert rules lock poisoned");
+        if !rules.iter().any(|r| r.id == rule.id) {
+            rules.push(rule);
+        }
+        Ok(())
+    }
+
+    async fn all_alert_rules(&self) -> Result<Vec<AlertRule>, StoreError> {
+        let mut out = self
+            .alert_rules
+            .lock()
+            .expect("alert rules lock poisoned")
+            .clone();
+        out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(out)
+    }
+
+    async fn record_alert_matches(
+        &self,
+        event: &AuditEvent,
+        matched_at: i64,
+    ) -> Result<Vec<AlertMatch>, StoreError> {
+        let rules = self
+            .alert_rules
+            .lock()
+            .expect("alert rules lock poisoned")
+            .clone();
+        let mut matches = self
+            .alert_matches
+            .lock()
+            .expect("alert matches lock poisoned");
+        let mut inserted = Vec::new();
+        for rule in rules.iter().filter(|r| r.matches(event)) {
+            let hit = make_alert_match(rule, event, matched_at);
+            if !matches.iter().any(|m| m.id == hit.id) {
+                matches.push(hit.clone());
+                inserted.push(hit);
+            }
+        }
+        Ok(inserted)
+    }
+
+    async fn recent_alert_matches(&self, limit: usize) -> Result<Vec<AlertMatch>, StoreError> {
+        let mut out = self
+            .alert_matches
+            .lock()
+            .expect("alert matches lock poisoned")
+            .clone();
+        out.sort_by(|a, b| b.matched_at.cmp(&a.matched_at));
+        out.truncate(limit);
         Ok(out)
     }
 }
@@ -256,6 +363,14 @@ impl PgStore {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_audit_events_action ON audit_events (action)")
             .execute(&self.pool)
             .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_audit_events_source ON audit_events (source)")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_audit_events_severity ON audit_events (severity)",
+        )
+        .execute(&self.pool)
+        .await?;
         // ADDITIVE: Merkle checkpoints (RFC6962-inspired tamper-evidence summary over the chain
         // prefix). Standard SQL only; the audit_events table and its append path are untouched.
         sqlx::query(
@@ -271,6 +386,53 @@ impl PgStore {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_checkpoints_seq_hi ON checkpoints (seq_hi)")
             .execute(&self.pool)
             .await?;
+        // ADDITIVE: alert rules and append-only match markers. These are independent from the
+        // audit event spine and contain no rewrite path.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS alert_rules (\
+                 id TEXT PRIMARY KEY, \
+                 name TEXT, \
+                 actor TEXT, \
+                 action TEXT, \
+                 source TEXT, \
+                 severity TEXT, \
+                 created_by TEXT, \
+                 created_at BIGINT\
+             )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_alert_rules_created_at ON alert_rules (created_at)",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS alert_matches (\
+                 id TEXT PRIMARY KEY, \
+                 rule_id TEXT, \
+                 rule_name TEXT, \
+                 event_seq BIGINT, \
+                 actor TEXT, \
+                 action TEXT, \
+                 target TEXT, \
+                 severity TEXT, \
+                 source TEXT, \
+                 matched_at BIGINT\
+             )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_alert_matches_matched_at ON alert_matches (matched_at)",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_alert_matches_event_seq ON alert_matches (event_seq)",
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -335,6 +497,34 @@ impl PgStore {
         })
     }
 
+    fn alert_rule_from_row(row: &sqlx::postgres::PgRow) -> Result<AlertRule, sqlx::Error> {
+        Ok(AlertRule {
+            id: row.try_get("id")?,
+            name: row.try_get("name")?,
+            actor: row.try_get("actor")?,
+            action: row.try_get("action")?,
+            source: row.try_get("source")?,
+            severity: row.try_get("severity")?,
+            created_by: row.try_get("created_by")?,
+            created_at: row.try_get("created_at")?,
+        })
+    }
+
+    fn alert_match_from_row(row: &sqlx::postgres::PgRow) -> Result<AlertMatch, sqlx::Error> {
+        Ok(AlertMatch {
+            id: row.try_get("id")?,
+            rule_id: row.try_get("rule_id")?,
+            rule_name: row.try_get("rule_name")?,
+            event_seq: row.try_get("event_seq")?,
+            actor: row.try_get("actor")?,
+            action: row.try_get("action")?,
+            target: row.try_get("target")?,
+            severity: row.try_get("severity")?,
+            source: row.try_get("source")?,
+            matched_at: row.try_get("matched_at")?,
+        })
+    }
+
     async fn insert_checkpoint_async(&self, cp: Checkpoint) -> Result<(), sqlx::Error> {
         // Idempotent insert: re-sealing an identical (id) state is a harmless no-op, so this is
         // not a mutation. No update/delete path exists for checkpoints either.
@@ -358,6 +548,85 @@ impl PgStore {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(Self::checkpoint_from_row).collect()
+    }
+
+    async fn insert_alert_rule_async(&self, rule: AlertRule) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO alert_rules \
+                 (id, name, actor, action, source, severity, created_by, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(&rule.id)
+        .bind(&rule.name)
+        .bind(&rule.actor)
+        .bind(&rule.action)
+        .bind(&rule.source)
+        .bind(&rule.severity)
+        .bind(&rule.created_by)
+        .bind(rule.created_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn all_alert_rules_async(&self) -> Result<Vec<AlertRule>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT id, name, actor, action, source, severity, created_by, created_at \
+             FROM alert_rules ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(Self::alert_rule_from_row).collect()
+    }
+
+    async fn insert_alert_match_async(&self, hit: &AlertMatch) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO alert_matches \
+                 (id, rule_id, rule_name, event_seq, actor, action, target, severity, source, matched_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(&hit.id)
+        .bind(&hit.rule_id)
+        .bind(&hit.rule_name)
+        .bind(hit.event_seq)
+        .bind(&hit.actor)
+        .bind(&hit.action)
+        .bind(&hit.target)
+        .bind(&hit.severity)
+        .bind(&hit.source)
+        .bind(hit.matched_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn record_alert_matches_async(
+        &self,
+        event: &AuditEvent,
+        matched_at: i64,
+    ) -> Result<Vec<AlertMatch>, sqlx::Error> {
+        let rules = self.all_alert_rules_async().await?;
+        let mut inserted = Vec::new();
+        for rule in rules.iter().filter(|r| r.matches(event)) {
+            let hit = make_alert_match(rule, event, matched_at);
+            self.insert_alert_match_async(&hit).await?;
+            inserted.push(hit);
+        }
+        Ok(inserted)
+    }
+
+    async fn recent_alert_matches_async(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<AlertMatch>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT id, rule_id, rule_name, event_seq, actor, action, target, severity, source, matched_at \
+             FROM alert_matches ORDER BY matched_at DESC LIMIT $1",
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(Self::alert_match_from_row).collect()
     }
 
     async fn all_events_async(&self) -> Result<Vec<AuditEvent>, sqlx::Error> {
@@ -387,15 +656,28 @@ impl PgStore {
             n += 1;
             conds.push(format!("action = ${n}"));
         }
+        if filter.source.is_some() {
+            n += 1;
+            conds.push(format!("source = ${n}"));
+        }
+        if filter.severity.is_some() {
+            n += 1;
+            conds.push(format!("severity = ${n}"));
+        }
         if filter.since.is_some() {
             n += 1;
             conds.push(format!("ts >= ${n}"));
         }
+        if filter.until.is_some() {
+            n += 1;
+            conds.push(format!("ts <= ${n}"));
+        }
         if filter.q.is_some() {
-            let (a, b, c) = (n + 1, n + 2, n + 3);
-            n += 3;
+            let (a, b, c, d, e, f) = (n + 1, n + 2, n + 3, n + 4, n + 5, n + 6);
+            n += 6;
             conds.push(format!(
-                "(lower(action) LIKE ${a} OR lower(target) LIKE ${b} OR lower(detail) LIKE ${c})"
+                "(lower(actor) LIKE ${a} OR lower(action) LIKE ${b} OR lower(target) LIKE ${c} \
+                  OR lower(detail) LIKE ${d} OR lower(source) LIKE ${e} OR lower(severity) LIKE ${f})"
             ));
         }
         if !conds.is_empty() {
@@ -403,7 +685,12 @@ impl PgStore {
             sql.push_str(&conds.join(" AND "));
         }
         n += 1;
-        sql.push_str(&format!(" ORDER BY seq DESC LIMIT ${n}"));
+        let limit_n = n;
+        n += 1;
+        let offset_n = n;
+        sql.push_str(&format!(
+            " ORDER BY seq DESC LIMIT ${limit_n} OFFSET ${offset_n}"
+        ));
 
         let mut query = sqlx::query(&sql);
         if let Some(actor) = &filter.actor {
@@ -412,17 +699,107 @@ impl PgStore {
         if let Some(action) = &filter.action {
             query = query.bind(action);
         }
+        if let Some(source) = &filter.source {
+            query = query.bind(source);
+        }
+        if let Some(severity) = &filter.severity {
+            query = query.bind(severity);
+        }
         if let Some(since) = filter.since {
             query = query.bind(since);
         }
+        if let Some(until) = filter.until {
+            query = query.bind(until);
+        }
         if let Some(q) = &filter.q {
             let pat = format!("%{}%", q.to_lowercase());
-            query = query.bind(pat.clone()).bind(pat.clone()).bind(pat);
+            query = query
+                .bind(pat.clone())
+                .bind(pat.clone())
+                .bind(pat.clone())
+                .bind(pat.clone())
+                .bind(pat.clone())
+                .bind(pat);
         }
-        query = query.bind(filter.limit as i64);
+        query = query.bind(filter.limit as i64).bind(filter.offset as i64);
 
         let rows = query.fetch_all(&self.pool).await?;
         rows.iter().map(Self::event_from_row).collect()
+    }
+
+    async fn count_async(&self, filter: &EventFilter) -> Result<usize, sqlx::Error> {
+        let mut sql = String::from("SELECT COUNT(*) AS count FROM audit_events");
+        let mut conds: Vec<String> = Vec::new();
+        let mut n = 0;
+        if filter.actor.is_some() {
+            n += 1;
+            conds.push(format!("actor = ${n}"));
+        }
+        if filter.action.is_some() {
+            n += 1;
+            conds.push(format!("action = ${n}"));
+        }
+        if filter.source.is_some() {
+            n += 1;
+            conds.push(format!("source = ${n}"));
+        }
+        if filter.severity.is_some() {
+            n += 1;
+            conds.push(format!("severity = ${n}"));
+        }
+        if filter.since.is_some() {
+            n += 1;
+            conds.push(format!("ts >= ${n}"));
+        }
+        if filter.until.is_some() {
+            n += 1;
+            conds.push(format!("ts <= ${n}"));
+        }
+        if filter.q.is_some() {
+            let (a, b, c, d, e, f) = (n + 1, n + 2, n + 3, n + 4, n + 5, n + 6);
+            conds.push(format!(
+                "(lower(actor) LIKE ${a} OR lower(action) LIKE ${b} OR lower(target) LIKE ${c} \
+                  OR lower(detail) LIKE ${d} OR lower(source) LIKE ${e} OR lower(severity) LIKE ${f})"
+            ));
+        }
+        if !conds.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&conds.join(" AND "));
+        }
+
+        let mut query = sqlx::query(&sql);
+        if let Some(actor) = &filter.actor {
+            query = query.bind(actor);
+        }
+        if let Some(action) = &filter.action {
+            query = query.bind(action);
+        }
+        if let Some(source) = &filter.source {
+            query = query.bind(source);
+        }
+        if let Some(severity) = &filter.severity {
+            query = query.bind(severity);
+        }
+        if let Some(since) = filter.since {
+            query = query.bind(since);
+        }
+        if let Some(until) = filter.until {
+            query = query.bind(until);
+        }
+        if let Some(q) = &filter.q {
+            let pat = format!("%{}%", q.to_lowercase());
+            query = query
+                .bind(pat.clone())
+                .bind(pat.clone())
+                .bind(pat.clone())
+                .bind(pat.clone())
+                .bind(pat.clone())
+                .bind(pat);
+        }
+
+        let row = query.fetch_one(&self.pool).await?;
+        let count: i64 = row.try_get("count")?;
+        Ok(count.max(0) as usize)
     }
 }
 
@@ -451,6 +828,12 @@ impl Store for PgStore {
             .map_err(|e| StoreError::Backend(e.to_string()))
     }
 
+    async fn count(&self, filter: &EventFilter) -> Result<usize, StoreError> {
+        self.count_async(filter)
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))
+    }
+
     async fn insert_checkpoint(&self, checkpoint: Checkpoint) -> Result<(), StoreError> {
         self.insert_checkpoint_async(checkpoint)
             .await
@@ -459,6 +842,34 @@ impl Store for PgStore {
 
     async fn all_checkpoints(&self) -> Result<Vec<Checkpoint>, StoreError> {
         self.all_checkpoints_async()
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))
+    }
+
+    async fn insert_alert_rule(&self, rule: AlertRule) -> Result<(), StoreError> {
+        self.insert_alert_rule_async(rule)
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))
+    }
+
+    async fn all_alert_rules(&self) -> Result<Vec<AlertRule>, StoreError> {
+        self.all_alert_rules_async()
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))
+    }
+
+    async fn record_alert_matches(
+        &self,
+        event: &AuditEvent,
+        matched_at: i64,
+    ) -> Result<Vec<AlertMatch>, StoreError> {
+        self.record_alert_matches_async(event, matched_at)
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))
+    }
+
+    async fn recent_alert_matches(&self, limit: usize) -> Result<Vec<AlertMatch>, StoreError> {
+        self.recent_alert_matches_async(limit)
             .await
             .map_err(|e| StoreError::Backend(e.to_string()))
     }

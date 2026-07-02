@@ -10,9 +10,13 @@
 //! - `POST /events` — append one event (bearer `AUDIT_INGEST_TOKEN`)
 //! - `GET /api/verify` — recompute the chain (public read)
 //! - `GET /api/events` — filtered list (public read)
+//! - `GET /api/events/search` / `GET /api/events/export` — paged search + CSV/JSON export
+//! - `GET /api/alert-rules` / `POST /api/alert-rules` — alert rules (create is SSO + CSRF)
+//! - `GET /api/alerts` — append-only alert match markers
 //! - `GET /` — SSO dashboard (gateway-authenticated; registered as the fallback so the
 //!   gateway-prefixed `/watchtower` path renders it too)
 
+pub mod alerts;
 pub mod auth;
 pub mod chain;
 pub mod config;
@@ -51,8 +55,15 @@ pub fn app(state: AppState) -> Router {
         .route("/events", post(handlers::events::ingest))
         .route("/api/verify", get(handlers::events::verify))
         .route("/api/events", get(handlers::events::list))
+        .route("/api/events/search", get(handlers::events::search))
+        .route("/api/events/export", get(handlers::events::export))
         .route("/api/checkpoint", post(handlers::checkpoints::create))
         .route("/api/checkpoints", get(handlers::checkpoints::list))
+        .route(
+            "/api/alert-rules",
+            get(handlers::alerts::list_rules).post(handlers::alerts::create_rule),
+        )
+        .route("/api/alerts", get(handlers::alerts::list_matches))
         .fallback(get(handlers::dashboard::dashboard))
         .with_state(state)
 }
