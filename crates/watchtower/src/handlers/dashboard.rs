@@ -5,9 +5,11 @@
 //! a filter bar, and the audit TIMELINE. It does NO login of its own — it reads the
 //! Sluice-injected `X-Auth-Email` to show "signed in as", and Logout points at the gateway.
 //!
-//! The page is fully self-contained: the design-system CSS is embedded via `include_str!`, so
+//! The page is fully self-contained: Odyssey CSS plus Watchtower service CSS are embedded, so
 //! there are no asset round-trips (and nothing to break under gateway path-prefixing). All
 //! producer-supplied fields are HTML-escaped on render (defense-in-depth against stored XSS).
+
+use std::sync::OnceLock;
 
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
@@ -21,8 +23,22 @@ use crate::merkle::{merkle_root_upto, Checkpoint};
 use crate::store::EventFilter;
 use crate::AppState;
 
-/// Embedded design-system CSS (brand tokens shared with the Keystone login UI).
-const APP_CSS: &str = include_str!("../../static/app.css");
+/// Watchtower-only CSS layered after Odyssey's canonical font, tokens, and components.
+const SERVICE_CSS: &str = include_str!("../../static/service.css");
+static APP_CSS: OnceLock<String> = OnceLock::new();
+
+/// Embedded design system, inlined into the rendered page's `<style>`.
+fn app_css() -> &'static str {
+    APP_CSS
+        .get_or_init(|| {
+            let mut css = String::with_capacity(odyssey::APP_CSS.len() + SERVICE_CSS.len());
+            css.push_str(odyssey::APP_CSS);
+            css.push_str(SERVICE_CSS);
+            css
+        })
+        .as_str()
+}
+
 /// Page shell with `{{PLACEHOLDER}}` slots filled in below.
 const TEMPLATE: &str = include_str!("../../templates/dashboard.html");
 
@@ -92,7 +108,7 @@ pub async fn dashboard(
     );
 
     let html = TEMPLATE
-        .replace("{{STYLE}}", APP_CSS)
+        .replace("{{STYLE}}", app_css())
         .replace("{{USERBOX}}", &userbox)
         .replace("{{BADGE_CLASS}}", badge_class)
         .replace("{{BADGE_TEXT}}", &badge_text)

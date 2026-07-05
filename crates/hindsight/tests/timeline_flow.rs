@@ -68,24 +68,41 @@ async fn full_incident_flow_in_memory() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    assert!(set_cookie.contains("__Host-csrf="), "GET / mints CSRF cookie");
+    assert!(
+        set_cookie.contains("__Host-csrf="),
+        "GET / mints CSRF cookie"
+    );
     let body = body_of(resp).await;
     assert!(body.contains("Incident Timeline"));
-    assert!(body.contains("upstream 502 from sluice"), "error log on timeline");
+    assert!(
+        body.contains("upstream 502 from sluice"),
+        "error log on timeline"
+    );
     assert!(body.contains("slow query 1200ms"), "warn log on timeline");
-    assert!(!body.contains("request served"), "info log excluded from timeline");
+    assert!(
+        !body.contains("request served"),
+        "info log excluded from timeline"
+    );
     // HTTP feeds (dead default URLs) are unavailable; the seeded Sift feed is live.
     assert!(body.contains("Sift · live"));
     assert!(body.contains("Watchtower · unavailable"));
     assert!(body.contains("No incidents yet"));
 
     // --- POST /api/incidents without identity -> 401 -----------------------
-    let form_b = form(&[("title", "Nope"), ("window_hours", "24"), ("csrf_token", CSRF)]);
+    let form_b = form(&[
+        ("title", "Nope"),
+        ("window_hours", "24"),
+        ("csrf_token", CSRF),
+    ]);
     let (status, _) = call(&state, post_csrf("/api/incidents", &form_b, None)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "no X-Auth -> 401");
 
     // --- POST /api/incidents with bad CSRF -> 401 --------------------------
-    let form_b = form(&[("title", "Nope"), ("window_hours", "24"), ("csrf_token", "WRONG")]);
+    let form_b = form(&[
+        ("title", "Nope"),
+        ("window_hours", "24"),
+        ("csrf_token", "WRONG"),
+    ]);
     let (status, _) = call(
         &state,
         post_csrf("/api/incidents", &form_b, Some(("u_alice", "alice@hf"))),
@@ -100,7 +117,11 @@ async fn full_incident_flow_in_memory() {
         ("csrf_token", CSRF),
     ]);
     let resp = app(state.clone())
-        .oneshot(post_csrf("/api/incidents", &form_b, Some(("u_alice", "alice@hf"))))
+        .oneshot(post_csrf(
+            "/api/incidents",
+            &form_b,
+            Some(("u_alice", "alice@hf")),
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);
@@ -110,7 +131,10 @@ async fn full_incident_flow_in_memory() {
         .and_then(|v| v.to_str().ok())
         .unwrap()
         .to_string();
-    assert!(location.starts_with("/incident/inc_"), "redirect to the new incident");
+    assert!(
+        location.starts_with("/incident/inc_"),
+        "redirect to the new incident"
+    );
 
     // --- dashboard now lists it --------------------------------------------
     let (_, body) = call(&state, get("/")).await;
@@ -121,7 +145,10 @@ async fn full_incident_flow_in_memory() {
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("Gateway 502 storm"));
     assert!(body.contains("Evidence window"));
-    assert!(body.contains("upstream 502 from sluice"), "log evidence in incident window");
+    assert!(
+        body.contains("upstream 502 from sluice"),
+        "log evidence in incident window"
+    );
     assert!(body.contains("No notes yet"));
 
     // --- add a note: missing identity -> 401 -------------------------------
@@ -132,7 +159,10 @@ async fn full_incident_flow_in_memory() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     // --- add a note: owner succeeds ----------------------------------------
-    let form_b = form(&[("body", "Correlated to a sluice restart."), ("csrf_token", CSRF)]);
+    let form_b = form(&[
+        ("body", "Correlated to a sluice restart."),
+        ("csrf_token", CSRF),
+    ]);
     let (status, _) = call(
         &state,
         post_csrf(&notes_path, &form_b, Some(("u_alice", "alice@hf"))),
@@ -140,13 +170,20 @@ async fn full_incident_flow_in_memory() {
     .await;
     assert_eq!(status, StatusCode::SEE_OTHER);
     let (_, body) = call(&state, get(&location)).await;
-    assert!(body.contains("Correlated to a sluice restart."), "note rendered");
+    assert!(
+        body.contains("Correlated to a sluice restart."),
+        "note rendered"
+    );
 
     // --- note on a missing incident -> 404 ---------------------------------
     let form_b = form(&[("body", "x"), ("csrf_token", CSRF)]);
     let (status, _) = call(
         &state,
-        post_csrf("/api/incidents/inc_missing/notes", &form_b, Some(("u_alice", "alice@hf"))),
+        post_csrf(
+            "/api/incidents/inc_missing/notes",
+            &form_b,
+            Some(("u_alice", "alice@hf")),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -193,7 +230,9 @@ async fn call(state: &AppState, req: Request<Body>) -> (StatusCode, String) {
 }
 
 async fn body_of(resp: axum::response::Response) -> String {
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     String::from_utf8_lossy(&bytes).to_string()
 }
 
@@ -209,7 +248,9 @@ fn post_csrf(uri: &str, body: &str, ident: Option<(&str, &str)>) -> Request<Body
         .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
         .header(header::COOKIE, format!("__Host-csrf={CSRF}"));
     if let Some((sub, email)) = ident {
-        b = b.header("x-auth-subject", sub).header("x-auth-email", email);
+        b = b
+            .header("x-auth-subject", sub)
+            .header("x-auth-email", email);
     }
     b.body(Body::from(body.to_string())).unwrap()
 }
@@ -227,7 +268,9 @@ fn enc(s: &str) -> String {
     let mut o = String::new();
     for b in s.bytes() {
         match b {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => o.push(b as char),
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                o.push(b as char)
+            }
             b' ' => o.push('+'),
             _ => o.push_str(&format!("%{b:02X}")),
         }

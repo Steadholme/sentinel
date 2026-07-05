@@ -3,17 +3,31 @@
 //! `health` is the unauthenticated liveness probe; `timeline` carries the SSO dashboard, the
 //! incident view, and the incident/note/timeline API.
 //!
-//! The shared design tokens / CSS are embedded (via `include_str!`) and inlined into every page,
-//! matching the HOLDFAST enterprise brand (the same look as the Keystone/Inkwell UI): brand
-//! gradient, indigo accent, cards, app-bar — dark command-center palette.
+//! Odyssey canonical CSS plus Hindsight service CSS are embedded and inlined into every page.
 
 pub mod health;
 pub mod timeline;
 
+use std::sync::OnceLock;
+
 use axum::http::StatusCode;
 
+/// Hindsight-only CSS layered after Odyssey's canonical font, tokens, and components.
+pub const SERVICE_CSS: &str = include_str!("../../static/service.css");
+
+static APP_CSS: OnceLock<String> = OnceLock::new();
+
 /// Embedded design system, inlined into each rendered page's `<style>`.
-pub const APP_CSS: &str = include_str!("../../static/app.css");
+pub fn app_css() -> &'static str {
+    APP_CSS
+        .get_or_init(|| {
+            let mut css = String::with_capacity(odyssey::APP_CSS.len() + SERVICE_CSS.len());
+            css.push_str(odyssey::APP_CSS);
+            css.push_str(SERVICE_CSS);
+            css
+        })
+        .as_str()
+}
 
 /// Cross-subdomain gateway logout (Hindsight lives at rca.w33d.xyz; the IdP is at id.w33d.xyz).
 pub const LOGOUT_URL: &str = "https://id.w33d.xyz/_gw/auth/logout";
@@ -122,9 +136,8 @@ fn month_abbr(m: time::Month) -> &'static str {
 /// Map a feed/event severity to the CSS dot/badge class (severity colour tokens).
 pub fn severity_class(severity: &str) -> &'static str {
     match severity.trim().to_ascii_lowercase().as_str() {
-        "error" | "err" | "crit" | "critical" | "fatal" | "alert" | "emerg" | "warning" | "warn" => {
-            "sev-error"
-        }
+        "error" | "err" | "crit" | "critical" | "fatal" | "alert" | "emerg" | "warning"
+        | "warn" => "sev-error",
         "notice" => "sev-notice",
         _ => "sev-info",
     }
@@ -161,7 +174,7 @@ pub fn error_page(status: StatusCode, message: &str) -> String {
   </div>
 </main>
 </body></html>"#,
-        css = APP_CSS,
+        css = app_css(),
         topbar = topbar("Hindsight", "operator"),
         code = code,
         reason = esc(reason),

@@ -150,8 +150,12 @@ impl LogReader for PgLogReader {
                     ts: r.try_get("ts").map_err(|e: sqlx::Error| e.to_string())?,
                     host: r.try_get("host").map_err(|e: sqlx::Error| e.to_string())?,
                     app: r.try_get("app").map_err(|e: sqlx::Error| e.to_string())?,
-                    severity: r.try_get("severity").map_err(|e: sqlx::Error| e.to_string())?,
-                    message: r.try_get("message").map_err(|e: sqlx::Error| e.to_string())?,
+                    severity: r
+                        .try_get("severity")
+                        .map_err(|e: sqlx::Error| e.to_string())?,
+                    message: r
+                        .try_get("message")
+                        .map_err(|e: sqlx::Error| e.to_string())?,
                     template_id: r
                         .try_get("template_id")
                         .map_err(|e: sqlx::Error| e.to_string())?,
@@ -191,10 +195,10 @@ mod tests {
     async fn in_memory_filters_window_and_severity_newest_first() {
         let reader = InMemoryLogReader::with_rows(vec![
             row("a", 100, "error"),
-            row("b", 150, "info"),   // dropped: not error/warn
+            row("b", 150, "info"), // dropped: not error/warn
             row("c", 200, "warn"),
-            row("d", 50, "error"),   // dropped: before window
-            row("e", 500, "error"),  // dropped: after window
+            row("d", 50, "error"),  // dropped: before window
+            row("e", 500, "error"), // dropped: after window
         ]);
         let hits = reader.recent_errors(80, 300, 10).await.unwrap();
         let ids: Vec<&str> = hits.iter().map(|r| r.id.as_str()).collect();

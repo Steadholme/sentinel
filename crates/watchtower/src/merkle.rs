@@ -184,7 +184,11 @@ mod tests {
         // NOT change the root computed up to seq_hi.
         let root8 = merkle_root_upto(&events, 8);
         let more = build_chain(20);
-        assert_eq!(root8, merkle_root_upto(&more, 8), "prefix root is stable as the log grows");
+        assert_eq!(
+            root8,
+            merkle_root_upto(&more, 8),
+            "prefix root is stable as the log grows"
+        );
         // A bigger prefix gives a different root.
         assert_ne!(root8, merkle_root_upto(&events, 16));
     }
@@ -221,7 +225,10 @@ mod tests {
             tampered.push(ev);
         }
         // The re-chained log is internally consistent...
-        assert!(crate::chain::verify_chain(&tampered).ok, "attacker re-chained cleanly");
+        assert!(
+            crate::chain::verify_chain(&tampered).ok,
+            "attacker re-chained cleanly"
+        );
         // ...but the checkpoint root no longer matches: the tamper IS caught.
         assert_ne!(
             cp.merkle_root,

@@ -48,7 +48,7 @@ fn is_word_boundary(s: &str, start: usize, len: usize) -> bool {
     let before_ok = start == 0
         || !s.as_bytes()[start - 1].is_ascii_alphanumeric() && s.as_bytes()[start - 1] != b'_';
     let end = start + len;
-    let after_ok = end >= s.len()
-        || !s.as_bytes()[end].is_ascii_alphanumeric() && s.as_bytes()[end] != b'_';
+    let after_ok =
+        end >= s.len() || !s.as_bytes()[end].is_ascii_alphanumeric() && s.as_bytes()[end] != b'_';
     before_ok && after_ok
 }

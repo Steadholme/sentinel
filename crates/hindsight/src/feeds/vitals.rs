@@ -75,18 +75,12 @@ fn anomaly(s: &Sample) -> Option<TimelineEvent> {
         s.host.trim().to_string()
     };
     let (severity, title) = match s.metric.as_str() {
-        "cpu_pct" if s.value >= CPU_PCT_HIGH => {
-            ("warning", format!("High CPU {:.0}%", s.value))
-        }
-        "mem_pct" if s.value >= MEM_PCT_HIGH => {
-            ("warning", format!("High memory {:.0}%", s.value))
-        }
+        "cpu_pct" if s.value >= CPU_PCT_HIGH => ("warning", format!("High CPU {:.0}%", s.value)),
+        "mem_pct" if s.value >= MEM_PCT_HIGH => ("warning", format!("High memory {:.0}%", s.value)),
         "load1" if s.value >= LOAD1_CRITICAL => {
             ("warning", format!("Critical load {:.2}", s.value))
         }
-        "load1" if s.value >= LOAD1_HIGH => {
-            ("notice", format!("Elevated load {:.2}", s.value))
-        }
+        "load1" if s.value >= LOAD1_HIGH => ("notice", format!("Elevated load {:.2}", s.value)),
         _ => return None,
     };
     Some(TimelineEvent {
@@ -118,8 +112,12 @@ mod tests {
         assert_eq!(evs.len(), 4);
         assert!(evs.iter().all(|e| e.source == SRC_VITALS));
         assert!(evs.iter().any(|e| e.title.contains("High CPU 95%")));
-        assert!(evs.iter().any(|e| e.title.contains("Elevated load 5.00") && e.severity == "notice"));
-        assert!(evs.iter().any(|e| e.title.contains("Critical load 9.00") && e.severity == "warning"));
+        assert!(evs
+            .iter()
+            .any(|e| e.title.contains("Elevated load 5.00") && e.severity == "notice"));
+        assert!(evs
+            .iter()
+            .any(|e| e.title.contains("Critical load 9.00") && e.severity == "warning"));
     }
 
     #[test]

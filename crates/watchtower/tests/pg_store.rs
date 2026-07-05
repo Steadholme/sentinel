@@ -37,7 +37,9 @@ async fn pg_store_full_integration() {
     };
 
     // --- connect / migrate (idempotent: run twice) -------------------------
-    let pg = PgStore::connect(&url).await.expect("connect to TEST_DATABASE_URL");
+    let pg = PgStore::connect(&url)
+        .await
+        .expect("connect to TEST_DATABASE_URL");
     pg.migrate().await.expect("migrate");
     pg.migrate().await.expect("migrate is idempotent");
 
@@ -47,14 +49,27 @@ async fn pg_store_full_integration() {
 
     // Separate raw pool to (a) reset the table for a clean run and (b) later simulate a
     // raw-DB tamper that the app's append-only API can never perform.
-    let raw = PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap();
-    sqlx::query("DELETE FROM audit_events").execute(&raw).await.unwrap();
+    let raw = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&url)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM audit_events")
+        .execute(&raw)
+        .await
+        .unwrap();
 
     // --- append N via HTTP, confirm chain links ----------------------------
-    let mut prev =
-        "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+    let mut prev = "0000000000000000000000000000000000000000000000000000000000000000".to_string();
     for i in 1..=12 {
-        let ev = ingest(&state, &format!("u_{i}"), "login.success", "info", &format!("pg entry {i}")).await;
+        let ev = ingest(
+            &state,
+            &format!("u_{i}"),
+            "login.success",
+            "info",
+            &format!("pg entry {i}"),
+        )
+        .await;
         assert_eq!(ev["seq"], i);
         assert_eq!(ev["prev_hash"], prev);
         prev = ev["hash"].as_str().unwrap().to_string();
@@ -100,7 +115,10 @@ async fn pg_store_full_integration() {
     assert!(html.contains("TAMPERED at seq 6"));
 
     // Cleanup the throwaway table state.
-    sqlx::query("DELETE FROM audit_events").execute(&raw).await.unwrap();
+    sqlx::query("DELETE FROM audit_events")
+        .execute(&raw)
+        .await
+        .unwrap();
     println!(
         "PG STORE INTEGRATION OK: migrate (idempotent) + serialized append + verify + LIKE/actor \
          filters + out-of-band tamper detected at exact seq"
@@ -112,7 +130,10 @@ async fn pg_store_full_integration() {
 async fn call(state: &AppState, req: Request<Body>) -> (StatusCode, Vec<u8>) {
     let resp = app(state.clone()).oneshot(req).await.unwrap();
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap().to_vec();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap()
+        .to_vec();
     (status, bytes)
 }
 
@@ -125,12 +146,21 @@ fn get(uri: &str) -> Request<Body> {
     Request::builder().uri(uri).body(Body::empty()).unwrap()
 }
 
-async fn ingest(state: &AppState, actor: &str, action: &str, severity: &str, detail: &str) -> Value {
+async fn ingest(
+    state: &AppState,
+    actor: &str,
+    action: &str,
+    severity: &str,
+    detail: &str,
+) -> Value {
     let req = Request::builder()
         .method("POST")
         .uri("/events")
         .header(header::CONTENT_TYPE, "application/json")
-        .header(header::AUTHORIZATION, format!("Bearer {DEFAULT_INGEST_TOKEN}"))
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {DEFAULT_INGEST_TOKEN}"),
+        )
         .body(Body::from(
             serde_json::json!({
                 "actor": actor, "action": action, "target": "keystone",

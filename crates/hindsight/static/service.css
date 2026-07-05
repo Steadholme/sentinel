@@ -1,0 +1,99 @@
+/* Hindsight service surface, layered after Odyssey canonical CSS. */
+
+:root {
+  --accent-border: var(--accent-soft-2);
+}
+
+.shell { max-width: 1120px; margin: 0 auto; padding: 28px; }
+.shell__head { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; flex-wrap: wrap; margin-bottom: 18px; }
+.shell__title { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -.02em; color: var(--ink); display: flex; align-items: center; gap: 10px; }
+.shell__sub { margin: 6px 0 0; font-size: 13px; color: var(--ink-3); line-height: 1.6; }
+
+.back-link { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; color: var(--ink-3); margin-bottom: 16px; }
+.back-link:hover { color: var(--accent-2); }
+
+.wtabs { display: inline-flex; gap: 2px; padding: 3px; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.wtab { padding: 5px 12px; font-size: 12.5px; font-weight: 550; color: var(--ink-3); border-radius: 4px; transition: background .1s, color .1s; }
+.wtab:hover { color: var(--ink); background: var(--surface); }
+.wtab--active { color: var(--ink); background: var(--surface); border: 1px solid var(--border); box-shadow: var(--sh-xs); }
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.chip { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; font-size: 12.5px; font-weight: 550; border-radius: var(--r-pill); border: 1px solid var(--border); background: var(--surface); color: var(--ink-2); }
+.chip__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); flex: none; }
+.chip--ok { background: var(--ok-soft); border-color: var(--ok-border); color: var(--ok-ink); }
+.chip--ok .chip__dot { background: var(--ok); }
+.chip--down { background: var(--down-soft); border-color: var(--down-border); color: var(--down-ink); }
+.chip--down .chip__dot { background: var(--down); }
+
+.hindsight-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; align-items: start; }
+.hindsight-grid > .rail { min-width: 0; }
+@media (max-width: 880px) { .hindsight-grid { grid-template-columns: 1fr; } }
+
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--sh-xs); overflow: hidden; }
+.panel + .panel { margin-top: 20px; }
+.panel__title { margin: 0; padding: 14px 20px; font-size: 13px; font-weight: 600; letter-spacing: -.01em; color: var(--ink); border-bottom: 1px solid var(--border); }
+
+.tl { padding: 6px 0; }
+.tl__item { display: flex; gap: 12px; padding: 12px 20px; align-items: flex-start; }
+.tl__item + .tl__item { border-top: 1px solid var(--border); }
+.tl__item:hover { background: var(--surface-2); }
+.tl__dot { width: 8px; height: 8px; border-radius: 50%; flex: none; margin-top: 6px; background: var(--ink-3); }
+.tl__dot.sev-error { background: var(--down); }
+.tl__dot.sev-notice { background: var(--warn); }
+.tl__dot.sev-info { background: var(--accent); }
+.tl__body { min-width: 0; flex: 1; }
+.tl__line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tl__src { font-size: 11px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; padding: 2px 7px; border-radius: var(--r-pill); border: 1px solid var(--border); background: var(--bg-2); color: var(--ink-3); }
+.tl__src--watchtower { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent-2); }
+.tl__src--sift { background: var(--ok-soft); border-color: var(--ok-border); color: var(--ok-ink); }
+.tl__src--vitals { background: var(--warn-soft); border-color: var(--warn-border); color: var(--warn-ink); }
+.tl__title { font-size: 13.5px; font-weight: 550; color: var(--ink); }
+.tl__meta { font-size: 12px; color: var(--ink-3); margin-top: 3px; }
+.tl__detail { color: var(--ink-2); }
+
+.inc-list { padding: 8px; }
+.inc-row { display: flex; align-items: center; gap: 12px; padding: 11px 12px; border-radius: var(--radius-sm); transition: background .1s; }
+.inc-row + .inc-row { border-top: 1px solid var(--border); }
+.inc-row:hover { background: var(--surface-2); }
+.inc-row__main { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.inc-row__title { font-size: 13.5px; font-weight: 550; color: var(--ink); }
+.inc-row__meta { font-size: 12px; color: var(--ink-3); }
+
+.badge--open { background: var(--accent-soft); border: 1px solid var(--accent-border); color: var(--accent-2); }
+.badge--resolved { background: var(--ok-soft); border: 1px solid var(--ok-border); color: var(--ok-ink); }
+
+.open-form, .note-form { padding: 16px 20px 18px; }
+.open-form .btn, .note-form .btn { width: 100%; justify-content: center; }
+.note-form { border-top: 1px solid var(--border); }
+
+.notes { padding: 8px 20px 4px; display: flex; flex-direction: column; gap: 12px; }
+.note { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 11px 13px; background: var(--surface); }
+.note__meta { font-size: 12px; color: var(--ink-3); font-weight: 550; margin-bottom: 5px; }
+.note__body { font-size: 13.5px; color: var(--ink); line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+
+.empty-state { padding: 40px 24px; text-align: center; color: var(--ink-3); }
+.empty-state h2 { margin: 0 0 6px; font-size: 14px; font-weight: 600; color: var(--ink-2); }
+.empty-state p { margin: 0; font-size: 13px; line-height: 1.6; }
+.empty-state--sm { padding: 22px 16px; }
+
+.error-card { max-width: 460px; margin: 60px auto; padding: 36px 32px; text-align: center; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--sh-sm); }
+.error-card__code { font-size: 13px; font-weight: 600; letter-spacing: .08em; color: var(--accent-2); }
+.error-card__title { margin: 8px 0 10px; font-size: 20px; font-weight: 600; color: var(--ink); }
+.error-card__msg { margin: 0 0 22px; font-size: 13.5px; color: var(--ink-3); line-height: 1.6; }
+
+/* App-bar right-side helpers (userbox) — restored: NOT canonical-covered (fix codex over-prune). */
+.allapps {
+  display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px;
+  border: 1px solid var(--border-2); border-radius: 8px; background: var(--surface);
+  font-size: 12.5px; font-weight: 500; color: var(--ink-2);
+}
+.allapps:hover { background: var(--bg-2); color: var(--ink); }
+.allapps svg { width: 14px; height: 14px; opacity: .8; }
+.userchip { display: inline-flex; align-items: center; gap: 8px; padding-left: 4px; }
+.userchip__avatar {
+  width: 28px; height: 28px; border-radius: 8px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--accent); color: var(--c-white); font-weight: 600; font-size: 12px;
+}
+.user-email { font-size: 13px; color: var(--ink-2); font-weight: 500; }
+@media (max-width: 640px) { .user-email { display: none; } }

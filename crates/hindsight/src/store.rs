@@ -121,7 +121,11 @@ impl Store for InMemoryStore {
             .filter(|n| n.incident_id == incident_id)
             .cloned()
             .collect();
-        v.sort_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)));
+        v.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
         v
     }
 
@@ -197,9 +201,11 @@ impl PgStore {
         .execute(&self.pool)
         .await?;
         // Backs the newest-first incident list scan.
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_incidents_created_at ON incidents (created_at)")
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_incidents_created_at ON incidents (created_at)",
+        )
+        .execute(&self.pool)
+        .await?;
         // Backs the per-incident note lookup.
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_notes_incident_id ON notes (incident_id)")
             .execute(&self.pool)
@@ -328,10 +334,12 @@ impl Store for PgStore {
     }
 
     async fn list_notes(&self, incident_id: &str) -> Vec<Note> {
-        self.list_notes_async(incident_id).await.unwrap_or_else(|e| {
-            tracing::error!(error = %e, "pg list_notes failed");
-            Vec::new()
-        })
+        self.list_notes_async(incident_id)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!(error = %e, "pg list_notes failed");
+                Vec::new()
+            })
     }
 
     async fn add_note(&self, note: &Note) -> Result<(), StoreError> {

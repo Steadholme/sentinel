@@ -14,6 +14,7 @@ name = "hindsight"
 path = "src/main.rs"
 
 [dependencies]
+odyssey = { path = "../odyssey" }
 # HTTP framework (shared with the estate): State/Path/Query/Form extractors, typed responses.
 axum = "0.8"
 # Async runtime axum runs on. The Store trait + LogReader are async (handlers `.await` them

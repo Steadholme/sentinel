@@ -18,9 +18,7 @@ use crate::auth;
 use crate::config::{DEFAULT_WINDOW_HOURS, TIMELINE_LIMIT};
 use crate::error::AppError;
 use crate::feeds::{self, Timeline, TimelineEvent};
-use crate::handlers::{
-    esc, fmt_date, fmt_datetime, severity_class, source_label, topbar, APP_CSS,
-};
+use crate::handlers::{app_css, esc, fmt_date, fmt_datetime, severity_class, source_label, topbar};
 use crate::store::{Incident, Note};
 use crate::{now_nanos, now_secs, AppState};
 
@@ -103,7 +101,7 @@ pub async fn dashboard(
     let incidents = state.store.list_incidents().await;
 
     let page = DASHBOARD_HTML
-        .replace("{{CSS}}", APP_CSS)
+        .replace("{{CSS}}", app_css())
         .replace("{{TOPBAR}}", &topbar("Incident Timeline", &email))
         .replace("{{WINDOW_LABEL}}", &esc(&window_label(window_hours)))
         .replace("{{WINDOW_TABS}}", &render_window_tabs(window_hours))
@@ -168,7 +166,7 @@ pub async fn incident(
     );
 
     let page = INCIDENT_HTML
-        .replace("{{CSS}}", APP_CSS)
+        .replace("{{CSS}}", app_css())
         .replace("{{TOPBAR}}", &topbar("Incident", &email))
         .replace("{{INCIDENT_ID}}", &esc(&inc.id))
         .replace("{{TITLE}}", &esc(&inc.title))
@@ -202,7 +200,11 @@ pub async fn open_incident(
     let window_hours = clamp_window(form.window_hours.unwrap_or(DEFAULT_WINDOW_HOURS));
     let now = now_secs();
     let id = format!("inc_{}", now_nanos());
-    let created_by = if email.is_empty() { sub.clone() } else { email.clone() };
+    let created_by = if email.is_empty() {
+        sub.clone()
+    } else {
+        email.clone()
+    };
 
     let incident = Incident {
         id: id.clone(),
@@ -250,7 +252,9 @@ pub async fn add_note(
 
     let body = form.body.trim();
     if body.is_empty() {
-        return Err(AppError::InvalidRequest("note body is required".to_string()));
+        return Err(AppError::InvalidRequest(
+            "note body is required".to_string(),
+        ));
     }
     let now = now_secs();
     let note = Note {
@@ -409,7 +413,11 @@ fn render_incident_list(incidents: &[Incident]) -> String {
             id = esc(&i.id),
             title = esc(&i.title),
             date = esc(&fmt_date(i.created_at)),
-            by = esc(if i.created_by.is_empty() { "—" } else { &i.created_by }),
+            by = esc(if i.created_by.is_empty() {
+                "—"
+            } else {
+                &i.created_by
+            }),
             badge = render_status_badge(&i.status),
         ));
     }
@@ -467,7 +475,11 @@ fn render_event(e: &TimelineEvent) -> String {
         src_label = esc(source_label(e.source)),
         title = esc(&e.title),
         when = esc(&fmt_datetime(e.ts)),
-        sep = if e.detail.trim().is_empty() { "" } else { " · " },
+        sep = if e.detail.trim().is_empty() {
+            ""
+        } else {
+            " · "
+        },
         detail = detail,
     )
 }
@@ -484,7 +496,11 @@ fn render_notes(notes: &[Note]) -> String {
   <div class="note__meta">{author} · {when}</div>
   <div class="note__body">{body}</div>
 </div>"#,
-            author = esc(if n.author_sub.is_empty() { "—" } else { &n.author_sub }),
+            author = esc(if n.author_sub.is_empty() {
+                "—"
+            } else {
+                &n.author_sub
+            }),
             when = esc(&fmt_datetime(n.created_at)),
             body = esc(&n.body),
         ));

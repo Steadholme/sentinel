@@ -66,18 +66,37 @@ async fn concurrent_reads_appends_and_healthz_never_wedge() {
     };
 
     // --- connect / migrate / clean slate -----------------------------------
-    let pg = PgStore::connect(&url).await.expect("connect to STRESS_DATABASE_URL");
+    let pg = PgStore::connect(&url)
+        .await
+        .expect("connect to STRESS_DATABASE_URL");
     pg.migrate().await.expect("migrate");
-    let raw = PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap();
-    sqlx::query("DELETE FROM audit_events").execute(&raw).await.unwrap();
+    let raw = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&url)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM audit_events")
+        .execute(&raw)
+        .await
+        .unwrap();
 
     let mut state = build_dev_state();
     state.store = Arc::new(pg);
 
     // --- seed a non-trivial chain ------------------------------------------
     for i in 1..=SEED_EVENTS {
-        let v = ingest_one(&state, &format!("seed_{i}"), "seed.event", "info", &format!("seed {i}")).await;
-        assert_eq!(v["seq"], i as i64, "seed appends are serialized + monotonic");
+        let v = ingest_one(
+            &state,
+            &format!("seed_{i}"),
+            "seed.event",
+            "info",
+            &format!("seed {i}"),
+        )
+        .await;
+        assert_eq!(
+            v["seq"], i as i64,
+            "seed appends are serialized + monotonic"
+        );
     }
 
     // Shared counters so the summary proves real work happened (not a no-op pass).
@@ -97,7 +116,9 @@ async fn concurrent_reads_appends_and_healthz_never_wedge() {
             for k in 0..READS_EACH {
                 let (status, body) = oneshot_json(&state, get("/api/verify"), PER_OP_DEADLINE)
                     .await
-                    .unwrap_or_else(|| panic!("reader {r} verify #{k} WEDGED (> {PER_OP_DEADLINE:?})"));
+                    .unwrap_or_else(|| {
+                        panic!("reader {r} verify #{k} WEDGED (> {PER_OP_DEADLINE:?})")
+                    });
                 assert_eq!(status, StatusCode::OK, "verify status");
                 assert_eq!(body["ok"], true, "chain stays valid under concurrency");
                 reads_done.fetch_add(1, Ordering::Relaxed);
@@ -111,10 +132,17 @@ async fn concurrent_reads_appends_and_healthz_never_wedge() {
         let appends_done = appends_done.clone();
         handles.push(tokio::spawn(async move {
             for k in 0..APPENDS_EACH {
-                let req = post_event(&format!("worker_{a}"), "burst.append", "info", &format!("a{a}-k{k}"));
+                let req = post_event(
+                    &format!("worker_{a}"),
+                    "burst.append",
+                    "info",
+                    &format!("a{a}-k{k}"),
+                );
                 let (status, body) = oneshot_json(&state, req, PER_OP_DEADLINE)
                     .await
-                    .unwrap_or_else(|| panic!("appender {a} append #{k} WEDGED (> {PER_OP_DEADLINE:?})"));
+                    .unwrap_or_else(|| {
+                        panic!("appender {a} append #{k} WEDGED (> {PER_OP_DEADLINE:?})")
+                    });
                 assert_eq!(status, StatusCode::OK, "append status: {body}");
                 appends_done.fetch_add(1, Ordering::Relaxed);
             }
@@ -159,7 +187,10 @@ async fn concurrent_reads_appends_and_healthz_never_wedge() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["ok"], true, "chain verifies after the storm");
     let expected = (SEED_EVENTS + APPENDERS * APPENDS_EACH) as i64;
-    assert_eq!(v["count"], expected, "every append landed exactly once, chain intact");
+    assert_eq!(
+        v["count"], expected,
+        "every append landed exactly once, chain intact"
+    );
 
     let max_health_ms = max_health_us.load(Ordering::Relaxed) as f64 / 1000.0;
     println!(
@@ -174,7 +205,10 @@ async fn concurrent_reads_appends_and_healthz_never_wedge() {
         HEALTH_DEADLINE.as_millis(),
     );
 
-    sqlx::query("DELETE FROM audit_events").execute(&raw).await.unwrap();
+    sqlx::query("DELETE FROM audit_events")
+        .execute(&raw)
+        .await
+        .unwrap();
 }
 
 // --- helpers ----------------------------------------------------------------------------
@@ -195,7 +229,10 @@ async fn oneshot_bytes(
     let fut = async {
         let resp = app(state.clone()).oneshot(req).await.unwrap();
         let status = resp.status();
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap().to_vec();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec();
         (status, bytes)
     };
     tokio::time::timeout(deadline, fut).await.ok()
@@ -219,7 +256,10 @@ fn post_event(actor: &str, action: &str, severity: &str, detail: &str) -> Reques
         .method("POST")
         .uri("/events")
         .header(header::CONTENT_TYPE, "application/json")
-        .header(header::AUTHORIZATION, format!("Bearer {DEFAULT_INGEST_TOKEN}"))
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {DEFAULT_INGEST_TOKEN}"),
+        )
         .body(Body::from(
             serde_json::json!({
                 "actor": actor, "action": action, "target": "keystone",
@@ -230,10 +270,20 @@ fn post_event(actor: &str, action: &str, severity: &str, detail: &str) -> Reques
         .unwrap()
 }
 
-async fn ingest_one(state: &AppState, actor: &str, action: &str, severity: &str, detail: &str) -> Value {
-    let (status, v) = oneshot_json(state, post_event(actor, action, severity, detail), PER_OP_DEADLINE)
-        .await
-        .expect("seed ingest wedged");
+async fn ingest_one(
+    state: &AppState,
+    actor: &str,
+    action: &str,
+    severity: &str,
+    detail: &str,
+) -> Value {
+    let (status, v) = oneshot_json(
+        state,
+        post_event(actor, action, severity, detail),
+        PER_OP_DEADLINE,
+    )
+    .await
+    .expect("seed ingest wedged");
     assert_eq!(status, StatusCode::OK, "seed ingest ok: {v}");
     v
 }

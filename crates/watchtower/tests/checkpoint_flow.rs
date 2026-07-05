@@ -49,7 +49,10 @@ async fn ingest(state: &AppState, actor: &str, detail: &str) {
         .method("POST")
         .uri("/events")
         .header(header::CONTENT_TYPE, "application/json")
-        .header(header::AUTHORIZATION, format!("Bearer {DEFAULT_INGEST_TOKEN}"))
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {DEFAULT_INGEST_TOKEN}"),
+        )
         .body(Body::from(
             serde_json::json!({
                 "actor": actor, "action": "login.success", "target": "keystone",
@@ -132,7 +135,10 @@ async fn checkpoints_list_reverifies_against_the_live_chain() {
     let arr = v.as_array().unwrap();
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0]["seq_hi"], 6);
-    assert_eq!(arr[0]["valid"], true, "checkpoint prefix is stable as the log grows");
+    assert_eq!(
+        arr[0]["valid"], true,
+        "checkpoint prefix is stable as the log grows"
+    );
 
     // The existing /api/verify is unchanged and still ok.
     let (_, verify) = json_call(&state, get("/api/verify")).await;
@@ -207,17 +213,32 @@ async fn dashboard_shows_checkpoints_and_seal_form() {
     let (status, bytes) = call(&state, req).await;
     assert_eq!(status, StatusCode::OK);
     let html = String::from_utf8(bytes).unwrap();
-    assert!(html.contains("Merkle checkpoints"), "checkpoints section rendered");
+    assert!(
+        html.contains("Merkle checkpoints"),
+        "checkpoints section rendered"
+    );
     assert!(html.contains("VERIFIED"), "checkpoint status badge");
-    assert!(html.contains("/api/checkpoint"), "seal form posts to the API");
-    assert!(html.contains(&tok), "hidden CSRF token embedded for the SSO identity");
+    assert!(
+        html.contains("/api/checkpoint"),
+        "seal form posts to the API"
+    );
+    assert!(
+        html.contains(&tok),
+        "hidden CSRF token embedded for the SSO identity"
+    );
 
     // Without an SSO session the seal form is hidden (no action target leaks).
     let (status, bytes) = call(&state, get("/")).await;
     assert_eq!(status, StatusCode::OK);
     let html = String::from_utf8(bytes).unwrap();
-    assert!(html.contains("Merkle checkpoints"), "section still visible read-only");
-    assert!(!html.contains("Seal checkpoint now"), "no seal form without SSO");
+    assert!(
+        html.contains("Merkle checkpoints"),
+        "section still visible read-only"
+    );
+    assert!(
+        !html.contains("Seal checkpoint now"),
+        "no seal form without SSO"
+    );
 }
 
 #[tokio::test]
