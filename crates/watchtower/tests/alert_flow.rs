@@ -11,7 +11,7 @@ use watchtower::auth::csrf_token;
 use watchtower::config::DEFAULT_INGEST_TOKEN;
 use watchtower::{app, build_dev_state, AppState};
 
-const ADMIN: &str = "admin@holdfast.local";
+const ADMIN: &str = "admin@steadholme.local";
 
 async fn call(state: &AppState, req: Request<Body>) -> (StatusCode, Vec<u8>) {
     let resp = app(state.clone()).oneshot(req).await.unwrap();

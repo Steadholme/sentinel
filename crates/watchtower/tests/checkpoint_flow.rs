@@ -19,7 +19,7 @@ use watchtower::merkle::make_checkpoint;
 use watchtower::store::{InMemoryStore, Store};
 use watchtower::{app, build_dev_state, AppState};
 
-const ADMIN: &str = "admin@holdfast.local";
+const ADMIN: &str = "admin@steadholme.local";
 
 // --- HTTP helpers ----------------------------------------------------------------------
 
@@ -245,7 +245,7 @@ async fn dashboard_shows_checkpoints_and_seal_form() {
 async fn admin_allowlist_excludes_non_admins() {
     // Build a state with an admin allowlist that excludes the caller.
     let mut config = watchtower::config::Config::dev();
-    config.admin_emails = vec!["boss@holdfast.local".to_string()];
+    config.admin_emails = vec!["boss@steadholme.local".to_string()];
     let state = AppState {
         config: Arc::new(config),
         store: Arc::new(InMemoryStore::new()),
@@ -258,7 +258,7 @@ async fn admin_allowlist_excludes_non_admins() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 
     // The allowlisted admin succeeds.
-    let boss = "boss@holdfast.local";
+    let boss = "boss@steadholme.local";
     let tok = token_for(boss);
     let (status, v) = json_call(&state, post_checkpoint_json(Some(boss), Some(&tok))).await;
     assert_eq!(status, StatusCode::OK);

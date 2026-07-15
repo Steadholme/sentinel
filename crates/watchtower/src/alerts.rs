@@ -172,7 +172,7 @@ mod tests {
             Some("login.failure".to_string()),
             Some("keystone".to_string()),
             Some("WARNING".to_string()),
-            "admin@holdfast.local".to_string(),
+            "admin@steadholme.local".to_string(),
             2,
         );
         assert!(rule.has_predicate());
@@ -184,7 +184,7 @@ mod tests {
             None,
             None,
             None,
-            "admin@holdfast.local".to_string(),
+            "admin@steadholme.local".to_string(),
             2,
         );
         assert!(!wrong_actor.matches(&ev));
@@ -199,7 +199,7 @@ mod tests {
             Some("login.failure".to_string()),
             None,
             None,
-            "admin@holdfast.local".to_string(),
+            "admin@steadholme.local".to_string(),
             2,
         );
         assert_eq!(

@@ -140,14 +140,14 @@ mod tests {
     #[test]
     fn csrf_token_is_identity_bound_and_validates() {
         let secret = "ingest-secret";
-        let tok = csrf_token(secret, "admin@holdfast.local");
+        let tok = csrf_token(secret, "admin@steadholme.local");
         // Round-trips for the same identity...
-        assert!(require_csrf(Some(&tok), secret, "admin@holdfast.local").is_ok());
+        assert!(require_csrf(Some(&tok), secret, "admin@steadholme.local").is_ok());
         // ...but is bound to that identity and secret.
         assert!(require_csrf(Some(&tok), secret, "mallory@evil.example").is_err());
-        assert!(require_csrf(Some(&tok), "other-secret", "admin@holdfast.local").is_err());
-        assert!(require_csrf(None, secret, "admin@holdfast.local").is_err());
-        assert!(require_csrf(Some("deadbeef"), secret, "admin@holdfast.local").is_err());
+        assert!(require_csrf(Some(&tok), "other-secret", "admin@steadholme.local").is_err());
+        assert!(require_csrf(None, secret, "admin@steadholme.local").is_err());
+        assert!(require_csrf(Some("deadbeef"), secret, "admin@steadholme.local").is_err());
     }
 
     #[test]
@@ -156,15 +156,15 @@ mod tests {
         // No identity -> unauthorized.
         assert!(require_admin_sso(&headers, &[]).is_err());
 
-        headers.insert("x-auth-email", "user@holdfast.local".parse().unwrap());
+        headers.insert("x-auth-email", "user@steadholme.local".parse().unwrap());
         // Empty allowlist -> any SSO user passes.
         assert_eq!(
             require_admin_sso(&headers, &[]).unwrap(),
-            "user@holdfast.local"
+            "user@steadholme.local"
         );
         // Non-empty allowlist excluding the user -> forbidden.
-        assert!(require_admin_sso(&headers, &["admin@holdfast.local".to_string()]).is_err());
+        assert!(require_admin_sso(&headers, &["admin@steadholme.local".to_string()]).is_err());
         // Allowlist including the user (case-insensitive) -> ok.
-        assert!(require_admin_sso(&headers, &["USER@holdfast.local".to_string()]).is_ok());
+        assert!(require_admin_sso(&headers, &["USER@steadholme.local".to_string()]).is_ok());
     }
 }

@@ -105,7 +105,7 @@ async fn pg_store_full_integration() {
     // The dashboard reflects the tamper with the red badge.
     let req = Request::builder()
         .uri("/watchtower")
-        .header("x-auth-email", "auditor@holdfast.local")
+        .header("x-auth-email", "auditor@steadholme.local")
         .body(Body::empty())
         .unwrap();
     let (status, bytes) = call(&state, req).await;

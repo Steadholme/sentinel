@@ -300,14 +300,14 @@ async fn dashboard_renders_with_identity_and_integrity_badge() {
     // GET / with the Sluice-injected X-Auth-Email -> server-rendered HTML.
     let req = Request::builder()
         .uri("/")
-        .header("x-auth-email", "admin@holdfast.local")
+        .header("x-auth-email", "admin@steadholme.local")
         .body(Body::empty())
         .unwrap();
     let (status, bytes) = call(&state, req).await;
     assert_eq!(status, StatusCode::OK);
     let html = String::from_utf8(bytes).unwrap();
     assert!(
-        html.contains("admin@holdfast.local"),
+        html.contains("admin@steadholme.local"),
         "shows signed-in email"
     );
     assert!(
@@ -332,7 +332,7 @@ async fn dashboard_renders_with_identity_and_integrity_badge() {
     // The gateway forwards its route prefix unmodified -> the dashboard still renders.
     let req = Request::builder()
         .uri("/watchtower")
-        .header("x-auth-email", "admin@holdfast.local")
+        .header("x-auth-email", "admin@steadholme.local")
         .body(Body::empty())
         .unwrap();
     let (status, bytes) = call(&state, req).await;
