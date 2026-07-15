@@ -2,7 +2,7 @@
 name = "sentinel"
 version = "0.1.0"
 edition = "2021"
-description = "Sentinel — one deployable hosting the HOLDFAST audit/RCA surfaces behind a Host-based vhost demux: the Watchtower tamper-evident audit spine (audit.w33d.xyz + internal watchtower:8500) plus the Hindsight read-only RCA correlator (rca.w33d.xyz). The two crates are vendored and reused verbatim; the compose service stays named `watchtower` so the estate-wide audit address watchtower:8500 is unchanged."
+description = "Sentinel — one deployable hosting the Steadholme audit/RCA surfaces behind a Host-based vhost demux: the Watchtower tamper-evident audit spine (audit.w33d.xyz + internal watchtower:8500) plus the Hindsight read-only RCA correlator (rca.w33d.xyz). The two crates are vendored and reused verbatim; the compose service stays named `watchtower` so the estate-wide audit address watchtower:8500 is unchanged."
 license = "MIT OR Apache-2.0"
 
 [[bin]]

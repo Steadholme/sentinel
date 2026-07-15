@@ -1,6 +1,6 @@
 # Hindsight — incident timeline / RCA correlator
 
-The observability **capstone** of the HOLDFAST estate. Hindsight correlates metrics + logs +
+The observability **capstone** of the Steadholme estate. Hindsight correlates metrics + logs +
 audit into one queryable, time-ordered **incident timeline**, lets operators **open incidents**
 over a window, and threads **notes** onto them for root-cause analysis.
 

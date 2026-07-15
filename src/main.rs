@@ -1,4 +1,4 @@
-//! Sentinel — one container hosting the HOLDFAST audit + RCA surfaces behind a Host-based demux.
+//! Sentinel — one container hosting the Steadholme audit + RCA surfaces behind a Host-based demux.
 //!
 //! Two vendored crates, reused verbatim:
 //! - **Watchtower** (audit spine): the tamper-evident audit log / SIEM. EVERY estate service POSTs

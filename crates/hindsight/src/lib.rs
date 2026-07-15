@@ -1,4 +1,4 @@
-//! Hindsight — incident timeline / RCA correlator for the HOLDFAST stack.
+//! Hindsight — incident timeline / RCA correlator for the Steadholme stack.
 //!
 //! The observability capstone over Vitals / Sift / Watchtower: it correlates metrics + logs +
 //! audit into one queryable, time-ordered incident timeline, and lets operators open incidents

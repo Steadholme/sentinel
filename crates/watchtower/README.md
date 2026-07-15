@@ -1,6 +1,6 @@
 # Watchtower
 
-Watchtower 是 HOLDFAST 内网的**防篡改审计骨干（tamper-evident audit spine）+ 迷你 SIEM 仪表盘**，
+Watchtower 是 Steadholme 内网的**防篡改审计骨干（tamper-evident audit spine）+ 迷你 SIEM 仪表盘**，
 用 Rust（axum 0.8）实现，与 keystone / keyward 同构。它把每一条安全相关事件写入一条**仅追加
 （append-only）、哈希链（hash-chained）**的审计日志：任何对历史的修改 / 重排 / 插入 / 删除都会从
 被篡改处起断链，可被 `GET /api/verify` 精确定位。
@@ -109,7 +109,7 @@ curl -s 'http://127.0.0.1:8500/api/events?q=login'          # 过滤列表
 
 `GET /` 渲染企业级 UI（与 Keystone 登录页同一套品牌设计令牌，CSS 经 `include_str!` 内联，无静态资源往返）：
 
-- 顶部应用栏：HOLDFAST 盾徽 + 字标、页标题、右侧 `X-Auth-Email` 与指向 `/_gw/auth/logout` 的退出链接
+- 顶部应用栏：Steadholme 盾徽 + 字标、页标题、右侧 `X-Auth-Email` 与指向 `/_gw/auth/logout` 的退出链接
 - **完整性徽章**：调用 verify —— 绿色 `Verified · N events · head abcd…`，或红色 `TAMPERED at seq K`
 - 严重度（severity）配色药丸 + 基本计数
 - 过滤栏 + 审计时间线表格
