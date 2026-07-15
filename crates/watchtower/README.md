@@ -153,8 +153,8 @@ verify 精确报出 `first_broken_seq`**。
 ## Docker
 
 ```bash
-docker build -t holdfast/watchtower:dev .
-docker run --rm -p 127.0.0.1:8500:8500 holdfast/watchtower:dev
+docker build -t steadholme/watchtower:dev .
+docker run --rm -p 127.0.0.1:8500:8500 steadholme/watchtower:dev
 curl -s http://127.0.0.1:8500/healthz   # ok
 ```
 
