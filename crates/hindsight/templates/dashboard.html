@@ -1,38 +1,54 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark light">
-  <title>Hindsight · Steadholme</title>
-  <style>{{CSS}}</style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>[[W33D:DOCUMENT_TITLE_TEXT]]</title>
+<style>[[W33D:STATIC_CSS]]</style>
 </head>
-<body class="page-app">
-{{TOPBAR}}
-<main class="shell">
-  <div class="shell__head">
-    <div>
-      <h1 class="shell__title">Incident Timeline</h1>
-      <p class="shell__sub">Correlated evidence from Watchtower, Sift, and Vitals · {{WINDOW_LABEL}}</p>
-    </div>
-    <nav class="wtabs" aria-label="Timeline window">{{WINDOW_TABS}}</nav>
+<body class="hd-page">
+<a class="hd-skip" href="#hd-main">Skip to the evidence register</a>
+[[W33D:TOPBAR_FRAGMENT]]
+<main class="hd-shell" id="hd-main" tabindex="-1">
+  <header class="hd-head">
+    <h1 class="hd-title">[[W33D:HEADING_TITLE_TEXT]]</h1>
+  </header>
+  [[W33D:PAGE_NOTICE_FRAGMENT]]
+  <section class="hd-gate" data-window-lifecycle="[[W33D:WINDOW_LIFECYCLE_TOKEN]]">
+    <h2 class="hd-gate__title">Window Gate</h2>
+    <dl class="hd-gate__bounds">
+      <div class="hd-gate__bound">
+        <dt class="hd-gate__term">Requested window</dt>
+        <dd class="hd-gate__value">[[W33D:WINDOW_REQUESTED_TEXT]]</dd>
+      </div>
+      <div class="hd-gate__bound">
+        <dt class="hd-gate__term">Effective window</dt>
+        <dd class="hd-gate__value">[[W33D:WINDOW_EFFECTIVE_TEXT]]</dd>
+      </div>
+      <div class="hd-gate__bound">
+        <dt class="hd-gate__term">Observed at</dt>
+        <dd class="hd-gate__value"><time class="hd-gate__time" datetime="[[W33D:WINDOW_OBSERVED_DATETIME_ATTRIBUTE]]">[[W33D:WINDOW_OBSERVED_TEXT]]</time></dd>
+      </div>
+    </dl>
+    <p class="hd-gate__lifecycle">[[W33D:WINDOW_LIFECYCLE_TEXT]]</p>
+    <nav class="hd-gate__choices" aria-label="Comparison window">
+      <ol class="hd-gate__choice-list">[[W33D:WINDOW_CHOICES_FRAGMENT]]</ol>
+    </nav>
+  </section>
+  <div class="hd-field">
+    [[W33D:AUDIT_CHANNEL_FRAGMENT]]
+    [[W33D:LOG_CHANNEL_FRAGMENT]]
+    [[W33D:METRIC_CHANNEL_FRAGMENT]]
   </div>
-  {{STATUS_CHIPS}}
-  <div class="hindsight-grid">
-    <section class="panel panel--timeline" aria-label="Merged timeline">
-      <h2 class="panel__title">Timeline</h2>
-      <div class="tl">{{TIMELINE}}</div>
+  <p class="hd-registration">Registration marks indicate time adjacency only. Hindsight does not assert cause.</p>
+  <div class="hd-operator">
+    <section class="hd-index" data-section-state="[[W33D:INCIDENT_SECTION_STATE_TOKEN]]">
+      <h2 class="hd-index__title">Incident case index</h2>
+      <p class="hd-index__state">[[W33D:INCIDENT_SECTION_STATE_TEXT]]</p>
+      <ol class="hd-index__rows">[[W33D:INCIDENT_ROWS_FRAGMENT_LIST]]</ol>
     </section>
-    <aside class="rail">
-      <section class="panel" aria-label="Open an incident">
-        <h2 class="panel__title">Open an incident</h2>
-        {{OPEN_FORM}}
-      </section>
-      <section class="panel" aria-label="Incidents">
-        <h2 class="panel__title">Incidents</h2>
-        <div class="inc-list">{{INCIDENTS}}</div>
-      </section>
-    </aside>
+    [[W33D:OPEN_INCIDENT_FORM_FRAGMENT]]
   </div>
 </main>
 </body>

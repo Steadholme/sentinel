@@ -1,0 +1,12 @@
+<section class="hd-resolve">
+  <h2 class="hd-resolve__title">Resolve this incident</h2>
+  [[W33D:RESOLVE_ERROR_SUMMARY_FRAGMENT]]
+  <form class="hd-form" id="resolve-form" method="post" action="[[W33D:RESOLVE_ACTION_PATH]]" novalidate>
+    <input type="hidden" name="incident_id" value="[[W33D:MUTATION_INCIDENT_ID_VALUE_ATTRIBUTE]]">
+    <input type="hidden" name="expected_lifecycle" value="[[W33D:RESOLVE_EXPECTED_LIFECYCLE_VALUE_ATTRIBUTE]]">
+    <input type="hidden" name="command_id" value="[[W33D:RESOLVE_COMMAND_ID_VALUE_ATTRIBUTE]]">
+    <input type="hidden" name="csrf_token" value="[[W33D:CSRF_VALUE_ATTRIBUTE]]">
+    <p class="hd-resolve__note">Resolving freezes the comparison window at one observation instant and records one durable resolution mark. A resolved incident cannot be reopened.</p>
+    <button class="btn btn-primary hd-form__submit" type="submit">Resolve incident</button>
+  </form>
+</section>

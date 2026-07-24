@@ -1,11 +1,4 @@
-//! The correlation engine: merge Watchtower events + Sift error/warn logs + Vitals anomalies
-//! into one time-ordered timeline over a window.
-//!
-//! The three feeds are fetched CONCURRENTLY (copying portal's resilient fan-out): a slow or down
-//! source can never serialize the others, and each independently degrades to "unavailable"
-//! ([`FeedStatus`]) instead of failing the page. All timestamps are normalized to epoch SECONDS
-//! before merge, so events from the audit chain (ms), logs (s), and metrics (s) interleave
-//! correctly.
+//! Hindsight evidence acquisition, comparison, and compatibility projection.
 
 pub mod sift;
 pub mod vitals;
@@ -14,221 +7,445 @@ pub mod watchtower;
 use serde::Serialize;
 
 use crate::config::Config;
-use sift::LogReader;
+use crate::config::TIMELINE_LIMIT;
+use crate::view_contract::{
+    allocate_display, ceil_millis_to_seconds, compare_items, floor_millis_to_seconds, Boundedness,
+    ChannelId, ChannelState, ChannelView, Coverage, CoverageKind, EffectiveWindowMs, EvidenceItem,
+    EvidenceRecord, GapTruth, ValidationError, WindowGate,
+};
+use sift::{LogAcquisition, LogReader};
+use vitals::MetricAcquisition;
+use watchtower::AuditAcquisition;
 
-/// Feed source labels (also the `source` field in the JSON timeline).
 pub const SRC_WATCHTOWER: &str = "watchtower";
 pub const SRC_SIFT: &str = "sift";
 pub const SRC_VITALS: &str = "vitals";
 
-/// One merged timeline entry. `ts` is always epoch SECONDS.
-#[derive(Clone, Debug, Serialize)]
-pub struct TimelineEvent {
-    pub ts: i64,
-    pub source: &'static str,
-    pub severity: String,
-    pub title: String,
-    pub detail: String,
+#[derive(Clone, Debug)]
+pub struct ComparisonSnapshot {
+    pub gate: WindowGate,
+    pub channels: [ChannelView; 3],
 }
 
-/// The result of one feed fetch: its events + whether the source was reachable.
-pub struct Feed {
-    pub events: Vec<TimelineEvent>,
-    pub available: bool,
-}
-
-impl Feed {
-    /// A reached-but-empty feed.
-    pub fn empty() -> Self {
-        Feed {
-            events: Vec::new(),
-            available: true,
-        }
-    }
-
-    /// An unavailable feed (the source was down / unreachable).
-    pub fn unavailable() -> Self {
-        Feed {
-            events: Vec::new(),
-            available: false,
-        }
-    }
-}
-
-/// Per-source availability for the current timeline (drives the "unavailable" chips in the UI).
 #[derive(Clone, Copy, Debug, Serialize)]
-pub struct FeedStatus {
+pub struct LegacyFeedStatus {
     pub watchtower: bool,
     pub sift: bool,
     pub vitals: bool,
 }
 
-/// The merged, time-ordered timeline plus the per-source availability.
-#[derive(Serialize)]
-pub struct Timeline {
-    pub from: i64,
-    pub to: i64,
-    pub status: FeedStatus,
-    pub events: Vec<TimelineEvent>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LegacySource {
+    Watchtower,
+    Sift,
+    Vitals,
 }
 
-/// Resolve a window's effective upper bound: `to == 0` (an open incident) means "now".
-pub fn effective_to(to: i64, now: i64) -> i64 {
-    if to <= 0 {
-        now
-    } else {
-        to
+#[derive(Clone, Debug, Serialize)]
+pub struct LegacyTimelineEvent {
+    pub ts: i64,
+    pub source: LegacySource,
+    pub severity: String,
+    pub title: String,
+    pub detail: String,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct RequestedWindowJson {
+    pub from_inclusive_ms: i64,
+    pub to_inclusive_ms: Option<i64>,
+    pub moving: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct EffectiveWindowJson {
+    pub from_inclusive_ms: i64,
+    pub to_inclusive_ms: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TimelineJsonV2 {
+    pub from: i64,
+    pub to: i64,
+    pub status: LegacyFeedStatus,
+    pub events: Vec<LegacyTimelineEvent>,
+    pub schema_version: u8,
+    pub requested_window_ms: RequestedWindowJson,
+    pub effective_window_ms: EffectiveWindowJson,
+    pub observed_at_ms: i64,
+    pub channels: [ChannelView; 3],
+}
+
+impl ComparisonSnapshot {
+    pub fn timeline_json_v2(&self) -> TimelineJsonV2 {
+        let events = legacy_events(&self.channels);
+        let status = LegacyFeedStatus {
+            watchtower: is_legacy_loaded(&self.channels[0].state),
+            sift: is_legacy_loaded(&self.channels[1].state),
+            vitals: is_legacy_loaded(&self.channels[2].state),
+        };
+        TimelineJsonV2 {
+            from: self.gate.effective.from_inclusive.div_euclid(1_000),
+            to: self.gate.effective.to_inclusive.div_euclid(1_000),
+            status,
+            events,
+            schema_version: 2,
+            requested_window_ms: RequestedWindowJson {
+                from_inclusive_ms: self.gate.requested.from_inclusive,
+                to_inclusive_ms: self.gate.requested.to_inclusive,
+                moving: self.gate.requested.to_inclusive.is_none(),
+            },
+            effective_window_ms: EffectiveWindowJson {
+                from_inclusive_ms: self.gate.effective.from_inclusive,
+                to_inclusive_ms: self.gate.effective.to_inclusive,
+            },
+            observed_at_ms: self.gate.observed_at_ms,
+            channels: self.channels.clone(),
+        }
     }
 }
 
-/// Correlate all three feeds over the window `[from, to]` (with `to <= 0` meaning "up to now").
-///
-/// `limit` bounds BOTH how many rows each feed pulls and the merged output, so a noisy window
-/// can never produce an unbounded page. Fetches run concurrently; any down feed is marked in the
-/// returned [`FeedStatus`] but never fails the call.
 pub async fn gather(
     config: &Config,
     logs: &dyn LogReader,
-    from: i64,
-    to: i64,
-    now: i64,
-    limit: usize,
-) -> Timeline {
-    let eff_to = effective_to(to, now);
-    let lim = limit as i64;
-
-    // Fan out: the three feeds in flight at once. A slow/down feed can't block the others.
-    let (wt, lg, vt) = tokio::join!(
-        watchtower::fetch(&config.watchtower_url, limit),
-        logs.recent_errors(from, eff_to, lim),
-        vitals::fetch(&config.vitals_url, from),
+    gate: WindowGate,
+) -> Result<ComparisonSnapshot, ValidationError> {
+    let from_s = ceil_millis_to_seconds(gate.effective.from_inclusive)?;
+    let to_s = floor_millis_to_seconds(gate.effective.to_inclusive)?;
+    let (audit, log, metric) = tokio::join!(
+        watchtower::fetch(Some(config.watchtower_url.as_str()), TIMELINE_LIMIT + 1),
+        logs.recent_errors(from_s, to_s, TIMELINE_LIMIT + 1),
+        vitals::fetch(Some(config.vitals_url.as_str()), from_s),
     );
 
-    let mut events: Vec<TimelineEvent> = Vec::new();
-    let status = FeedStatus {
-        watchtower: wt.available,
-        // Sift returns Result — Ok means reached (even if empty).
-        sift: lg.is_ok(),
-        vitals: vt.available,
-    };
+    let mut channels = [
+        audit_channel(audit, gate)?,
+        log_channel(log, gate)?,
+        metric_channel(metric, gate)?,
+    ];
+    allocate_display(&mut channels, TIMELINE_LIMIT).map_err(|_| ValidationError::InvalidScalar)?;
+    Ok(ComparisonSnapshot { gate, channels })
+}
 
-    // Watchtower + Vitals events still need to be clipped to the window (they over-fetch).
-    for e in wt.events.into_iter().chain(vt.events.into_iter()) {
-        if e.ts >= from && e.ts <= eff_to {
-            events.push(e);
+fn audit_channel(
+    acquisition: AuditAcquisition,
+    gate: WindowGate,
+) -> Result<ChannelView, ValidationError> {
+    match acquisition {
+        AuditAcquisition::ConfigurationAbsentOrInvalid => {
+            failed(ChannelId::Audit, ChannelState::ConfigurationAbsentOrInvalid)
         }
-    }
-    // Sift rows already arrive windowed; fold each into a timeline event.
-    if let Ok(rows) = lg {
-        for r in rows {
-            events.push(sift_to_timeline(r));
+        AuditAcquisition::Unavailable => failed(ChannelId::Audit, ChannelState::Unavailable),
+        AuditAcquisition::NonSuccess => failed(ChannelId::Audit, ChannelState::NonSuccess),
+        AuditAcquisition::OversizeTruncated => {
+            failed(ChannelId::Audit, ChannelState::OversizeTruncated)
         }
-    }
-
-    // Newest-first, with a stable tiebreak so equal-ts events don't reorder between renders.
-    events.sort_by(|a, b| {
-        b.ts.cmp(&a.ts)
-            .then_with(|| a.source.cmp(b.source))
-            .then_with(|| a.title.cmp(&b.title))
-    });
-    events.truncate(limit);
-
-    Timeline {
-        from,
-        to: eff_to,
-        status,
-        events,
+        AuditAcquisition::InvalidSchema => failed(ChannelId::Audit, ChannelState::InvalidSchema),
+        AuditAcquisition::Loaded(records) => {
+            let acquired_count = records.len();
+            let acquired_from_ms = records.iter().map(|row| row.recorded_at_ms).min();
+            let acquired_to_ms = records.iter().map(|row| row.recorded_at_ms).max();
+            let retained = records
+                .into_iter()
+                .filter(|row| {
+                    row.recorded_at_ms >= gate.effective.from_inclusive
+                        && row.recorded_at_ms <= gate.effective.to_inclusive
+                })
+                .map(EvidenceRecord::Audit)
+                .collect();
+            loaded(
+                ChannelId::Audit,
+                Boundedness::CompletenessUnknown,
+                coverage(
+                    CoverageKind::RecentCountBounded,
+                    gate,
+                    acquired_from_ms,
+                    acquired_to_ms,
+                    GapTruth::Unknown,
+                    GapTruth::Unknown,
+                ),
+                acquired_count,
+                retained,
+            )
+        }
     }
 }
 
-/// Fold a Sift log row into a timeline event (`host · app` detail, normalized severity).
-fn sift_to_timeline(r: sift::LogRow) -> TimelineEvent {
-    let mut detail = String::new();
-    if !r.host.trim().is_empty() {
-        detail.push_str(r.host.trim());
-    }
-    if !r.app.trim().is_empty() {
-        if !detail.is_empty() {
-            detail.push_str(" · ");
+fn log_channel(
+    acquisition: LogAcquisition,
+    gate: WindowGate,
+) -> Result<ChannelView, ValidationError> {
+    match acquisition {
+        LogAcquisition::ConfigurationAbsentOrInvalid => {
+            failed(ChannelId::Log, ChannelState::ConfigurationAbsentOrInvalid)
         }
-        detail.push_str(r.app.trim());
+        LogAcquisition::Unavailable => failed(ChannelId::Log, ChannelState::Unavailable),
+        LogAcquisition::OversizeTruncated => {
+            failed(ChannelId::Log, ChannelState::OversizeTruncated)
+        }
+        LogAcquisition::InvalidSchema => failed(ChannelId::Log, ChannelState::InvalidSchema),
+        LogAcquisition::Loaded {
+            rows,
+            acquired_from_ms,
+            acquired_to_ms,
+        } => {
+            let decoded_count = rows
+                .acquired_count
+                .checked_add(usize::from(matches!(
+                    rows.boundedness,
+                    Boundedness::KnownMore
+                )))
+                .ok_or(ValidationError::Overflow)?;
+            let gap_before = match rows.boundedness {
+                Boundedness::KnownMore => GapTruth::Observed,
+                Boundedness::ProvenEnd => GapTruth::NotObserved,
+                Boundedness::CompletenessUnknown => return Err(ValidationError::InvalidScalar),
+            };
+            let retained =
+                clip_second_records(rows.rows, gate.effective, EvidenceRecord::Log, |record| {
+                    record.recorded_at_s
+                })?;
+            loaded(
+                ChannelId::Log,
+                rows.boundedness,
+                coverage(
+                    CoverageKind::ExactWindowLimitPlusOne,
+                    gate,
+                    acquired_from_ms,
+                    acquired_to_ms,
+                    gap_before,
+                    GapTruth::NotObserved,
+                ),
+                decoded_count,
+                retained,
+            )
+        }
     }
-    let severity = match r.severity.trim().to_ascii_lowercase().as_str() {
-        "" => "info".to_string(),
-        other => other.to_string(),
-    };
-    TimelineEvent {
-        ts: r.ts,
-        source: SRC_SIFT,
-        severity,
-        title: r.message,
-        detail,
+}
+
+fn metric_channel(
+    acquisition: MetricAcquisition,
+    gate: WindowGate,
+) -> Result<ChannelView, ValidationError> {
+    match acquisition {
+        MetricAcquisition::ConfigurationAbsentOrInvalid => failed(
+            ChannelId::Metric,
+            ChannelState::ConfigurationAbsentOrInvalid,
+        ),
+        MetricAcquisition::Unavailable => failed(ChannelId::Metric, ChannelState::Unavailable),
+        MetricAcquisition::NonSuccess => failed(ChannelId::Metric, ChannelState::NonSuccess),
+        MetricAcquisition::OversizeTruncated => {
+            failed(ChannelId::Metric, ChannelState::OversizeTruncated)
+        }
+        MetricAcquisition::InvalidSchema => failed(ChannelId::Metric, ChannelState::InvalidSchema),
+        MetricAcquisition::Loaded {
+            acquired_count,
+            acquired_from_ms,
+            acquired_to_ms,
+            records,
+        } => {
+            let retained =
+                clip_second_records(records, gate.effective, EvidenceRecord::Metric, |record| {
+                    record.recorded_at_s
+                })?;
+            loaded(
+                ChannelId::Metric,
+                Boundedness::CompletenessUnknown,
+                coverage(
+                    CoverageKind::LowerBoundSizeCapped,
+                    gate,
+                    acquired_from_ms,
+                    acquired_to_ms,
+                    GapTruth::Unknown,
+                    GapTruth::Unknown,
+                ),
+                acquired_count,
+                retained,
+            )
+        }
     }
+}
+
+fn failed(id: ChannelId, state: ChannelState) -> Result<ChannelView, ValidationError> {
+    ChannelView::failed(id, state).map_err(|_| ValidationError::InvalidScalar)
+}
+
+fn loaded(
+    id: ChannelId,
+    boundedness: Boundedness,
+    coverage: Coverage,
+    acquired_count: usize,
+    records: Vec<EvidenceRecord>,
+) -> Result<ChannelView, ValidationError> {
+    ChannelView::loaded(id, boundedness, coverage, acquired_count, records)
+        .map_err(|_| ValidationError::InvalidScalar)
+}
+
+fn coverage(
+    kind: CoverageKind,
+    gate: WindowGate,
+    acquired_from_ms: Option<i64>,
+    acquired_to_ms: Option<i64>,
+    gap_before_window: GapTruth,
+    gap_after_window: GapTruth,
+) -> Coverage {
+    Coverage {
+        kind,
+        requested_from_ms: gate.requested.from_inclusive,
+        requested_to_ms: gate.requested.to_inclusive,
+        effective_from_ms: gate.effective.from_inclusive,
+        effective_to_ms: gate.effective.to_inclusive,
+        acquired_from_ms,
+        acquired_to_ms,
+        gap_before_window,
+        gap_after_window,
+    }
+}
+
+fn clip_second_records<T>(
+    records: Vec<T>,
+    window: EffectiveWindowMs,
+    wrap: fn(T) -> EvidenceRecord,
+    timestamp: fn(&T) -> i64,
+) -> Result<Vec<EvidenceRecord>, ValidationError> {
+    let mut retained = Vec::new();
+    for record in records {
+        let instant = timestamp(&record)
+            .checked_mul(1_000)
+            .ok_or(ValidationError::Overflow)?;
+        if instant >= window.from_inclusive && instant <= window.to_inclusive {
+            retained.push(wrap(record));
+        }
+    }
+    Ok(retained)
+}
+
+fn is_legacy_loaded(state: &ChannelState) -> bool {
+    matches!(
+        state,
+        ChannelState::LoadedEmpty | ChannelState::LoadedNonEmpty(_)
+    )
+}
+
+fn legacy_events(channels: &[ChannelView; 3]) -> Vec<LegacyTimelineEvent> {
+    let mut records = Vec::new();
+    for channel in channels {
+        for item in &channel.items {
+            match item {
+                EvidenceItem::Event { record } => records.push(record.clone()),
+                EvidenceItem::Conflict { variants, .. } => {
+                    records.extend(variants.iter().cloned());
+                }
+            }
+        }
+    }
+    records.sort_by(|left, right| {
+        compare_items(
+            &EvidenceItem::Event {
+                record: left.clone(),
+            },
+            &EvidenceItem::Event {
+                record: right.clone(),
+            },
+        )
+    });
+    records.truncate(TIMELINE_LIMIT);
+    records.into_iter().map(legacy_event).collect()
+}
+
+fn legacy_event(record: EvidenceRecord) -> LegacyTimelineEvent {
+    match record {
+        EvidenceRecord::Audit(record) => LegacyTimelineEvent {
+            ts: record.recorded_at_ms.div_euclid(1_000),
+            source: LegacySource::Watchtower,
+            severity: record.severity,
+            title: if record.action.is_empty() {
+                "Source title not recorded".to_string()
+            } else {
+                record.action
+            },
+            detail: join_nonempty([
+                record.source.as_str(),
+                record.target.as_str(),
+                record.actor.as_str(),
+            ]),
+        },
+        EvidenceRecord::Log(record) => LegacyTimelineEvent {
+            ts: record.recorded_at_s,
+            source: LegacySource::Sift,
+            severity: record.severity,
+            title: if record.message.is_empty() {
+                "Source title not recorded".to_string()
+            } else {
+                record.message
+            },
+            detail: join_nonempty([record.host.as_str(), record.app.as_str()]),
+        },
+        EvidenceRecord::Metric(record) => LegacyTimelineEvent {
+            ts: record.recorded_at_s,
+            source: LegacySource::Vitals,
+            severity: match record.classification {
+                crate::view_contract::MetricClassification::LoadElevated => "notice".to_string(),
+                _ => "warning".to_string(),
+            },
+            title: record.derivation,
+            detail: record.host,
+        },
+    }
+}
+
+fn join_nonempty<const N: usize>(parts: [&str; N]) -> String {
+    parts
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::sift::{InMemoryLogReader, LogRow};
     use super::*;
+    use crate::feeds::sift::{InMemoryLogReader, LogRow};
+    use crate::view_contract::{RequestedWindowMs, WindowLifecycle};
 
-    fn cfg() -> Config {
-        // Point the HTTP feeds at a dead port so they degrade to "unavailable" deterministically.
-        Config {
+    #[tokio::test]
+    async fn sibling_failures_do_not_erase_loaded_log_truth() {
+        let logs = InMemoryLogReader::with_rows(vec![LogRow {
+            id: "log-1".to_string(),
+            ts: 100,
+            host: "host".to_string(),
+            app: "app".to_string(),
+            severity: "error".to_string(),
+            message: "failure".to_string(),
+            template_id: "template".to_string(),
+        }]);
+        let config = Config {
             bind_addr: "0.0.0.0:9180".to_string(),
-            vitals_url: "http://127.0.0.1:1".to_string(),
-            watchtower_url: "http://127.0.0.1:1".to_string(),
-        }
-    }
-
-    #[test]
-    fn effective_to_resolves_open_window() {
-        assert_eq!(effective_to(0, 1000), 1000);
-        assert_eq!(effective_to(-5, 1000), 1000);
-        assert_eq!(effective_to(500, 1000), 500);
-    }
-
-    #[tokio::test]
-    async fn gather_merges_sift_and_marks_down_http_feeds() {
-        let logs = InMemoryLogReader::with_rows(vec![
-            LogRow {
-                id: "l1".to_string(),
-                ts: 150,
-                host: "h1".to_string(),
-                app: "api".to_string(),
-                severity: "error".to_string(),
-                message: "disk full".to_string(),
-                template_id: "t".to_string(),
+            vitals_url: "invalid".to_string(),
+            watchtower_url: "invalid".to_string(),
+        };
+        let gate = WindowGate::validate(
+            RequestedWindowMs {
+                from_inclusive: 1,
+                to_inclusive: Some(200_000),
             },
-            LogRow {
-                id: "l2".to_string(),
-                ts: 250,
-                host: "h2".to_string(),
-                app: "db".to_string(),
-                severity: "warn".to_string(),
-                message: "slow query".to_string(),
-                template_id: "t".to_string(),
-            },
-        ]);
-
-        let tl = gather(&cfg(), &logs, 100, 300, 9_999, 100).await;
-        // HTTP feeds are unreachable; Sift (in-memory) is reached.
-        assert!(!tl.status.watchtower);
-        assert!(!tl.status.vitals);
-        assert!(tl.status.sift);
-        // Both log rows fall in window, newest-first.
-        assert_eq!(tl.events.len(), 2);
-        assert_eq!(tl.events[0].title, "slow query");
-        assert_eq!(tl.events[0].source, SRC_SIFT);
-        assert_eq!(tl.events[1].title, "disk full");
-        assert_eq!(tl.to, 300);
-    }
-
-    #[tokio::test]
-    async fn gather_marks_sift_unavailable_when_down() {
-        let logs = InMemoryLogReader::down();
-        let tl = gather(&cfg(), &logs, 0, 0, 1000, 50).await;
-        assert!(!tl.status.sift);
-        assert!(tl.events.is_empty());
-        assert_eq!(tl.to, 1000, "open window resolves to now");
+            200_000,
+            WindowLifecycle::Frozen,
+        )
+        .unwrap();
+        let snapshot = gather(&config, &logs, gate).await.unwrap();
+        assert!(matches!(
+            snapshot.channels[0].state,
+            ChannelState::ConfigurationAbsentOrInvalid
+        ));
+        assert!(matches!(
+            snapshot.channels[1].state,
+            ChannelState::LoadedNonEmpty(_)
+        ));
+        assert!(matches!(
+            snapshot.channels[2].state,
+            ChannelState::ConfigurationAbsentOrInvalid
+        ));
     }
 }

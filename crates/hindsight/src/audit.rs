@@ -17,6 +17,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
+use crate::view_contract::AuditEnqueueOutcome;
+
 /// Bounded queue depth. Beyond this, events are dropped rather than blocking the caller.
 const QUEUE_CAPACITY: usize = 1024;
 /// Per-POST budget (connect + write + read). Watchtower is in-network; keep it short.
@@ -98,14 +100,14 @@ impl AuditSink {
             return Self::disabled();
         };
         let Some(target) = Target::parse(watchtower_url) else {
-            tracing::warn!(url = %watchtower_url, "invalid WATCHTOWER_URL — audit disabled");
+            tracing::warn!(outcome = "configuration-invalid", "audit disabled");
             return Self::disabled();
         };
 
         let (tx, rx) = mpsc::channel::<AuditEvent>(QUEUE_CAPACITY);
         let dropped = Arc::new(AtomicU64::new(0));
         tokio::spawn(worker(rx, target, token.to_string()));
-        tracing::info!(url = %watchtower_url, "audit emitter enabled (watchtower)");
+        tracing::info!(outcome = "enabled", "audit emitter configured");
         AuditSink {
             inner: Some(Inner { tx, dropped }),
         }
@@ -113,23 +115,32 @@ impl AuditSink {
 
     /// Emit one event. Sync, non-blocking, infallible: `try_send` only; on a full queue or a dead
     /// worker the event is DROPPED (drop counter + warn). NEVER blocks or errors the request path.
-    pub fn emit(&self, event: AuditEvent) {
-        let Some(inner) = &self.inner else { return };
+    pub fn emit(&self, event: AuditEvent) -> AuditEnqueueOutcome {
+        let Some(inner) = &self.inner else {
+            return AuditEnqueueOutcome::Disabled;
+        };
         if let Err(e) = inner.tx.try_send(event) {
             let total = inner.dropped.fetch_add(1, Ordering::Relaxed) + 1;
             match e {
-                mpsc::error::TrySendError::Full(ev) => tracing::warn!(
-                    action = %ev.action,
-                    dropped_total = total,
-                    "audit queue full — event dropped"
-                ),
-                mpsc::error::TrySendError::Closed(ev) => tracing::warn!(
-                    action = %ev.action,
-                    dropped_total = total,
-                    "audit worker gone — event dropped"
-                ),
+                mpsc::error::TrySendError::Full(_) => {
+                    tracing::warn!(
+                        outcome = "dropped-full",
+                        dropped_total = total,
+                        "audit queue full — event dropped"
+                    );
+                    return AuditEnqueueOutcome::DroppedFull;
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    tracing::warn!(
+                        outcome = "dropped-closed",
+                        dropped_total = total,
+                        "audit worker gone — event dropped"
+                    );
+                    return AuditEnqueueOutcome::DroppedClosed;
+                }
             }
         }
+        AuditEnqueueOutcome::Enqueued
     }
 
     /// Total events dropped so far (full queue or dead worker). `0` for a disabled sink.
@@ -147,22 +158,36 @@ async fn worker(mut rx: mpsc::Receiver<AuditEvent>, target: Target, token: Strin
     while let Some(event) = rx.recv().await {
         let body = match serde_json::to_string(&event) {
             Ok(b) => b,
-            Err(e) => {
-                tracing::warn!(error = %e, "audit event serialize failed — skipped");
+            Err(_) => {
+                tracing::warn!(outcome = "serialization-failed", "audit event skipped");
                 continue;
             }
         };
         match tokio::time::timeout(POST_TIMEOUT, post(&target, &token, &body)).await {
             Ok(Ok(status)) if (200..300).contains(&status) => {
-                tracing::debug!(action = %event.action, status, "audit event delivered")
+                tracing::debug!(
+                    outcome = "accepted",
+                    status_class = "2xx",
+                    "audit POST completed"
+                )
             }
             Ok(Ok(status)) => {
-                tracing::warn!(action = %event.action, status, "watchtower rejected audit event")
+                let status_class = match status {
+                    300..=399 => "3xx",
+                    400..=499 => "4xx",
+                    500..=599 => "5xx",
+                    _ => "other",
+                };
+                tracing::warn!(
+                    outcome = "non-success",
+                    status_class,
+                    "audit POST completed"
+                )
             }
-            Ok(Err(e)) => {
-                tracing::warn!(action = %event.action, error = %e, "audit POST failed")
+            Ok(Err(_)) => {
+                tracing::warn!(outcome = "transport-failed", "audit POST failed")
             }
-            Err(_) => tracing::warn!(action = %event.action, "audit POST timed out"),
+            Err(_) => tracing::warn!(outcome = "timeout", "audit POST timed out"),
         }
     }
 }
@@ -244,7 +269,7 @@ mod tests {
     fn disabled_sink_is_noop_and_never_drops() {
         let sink = AuditSink::disabled();
         for _ in 0..1000 {
-            sink.emit(AuditEvent::notice(
+            let _ = sink.emit(AuditEvent::notice(
                 "hindsight.incident.open",
                 "a@b",
                 "inc_1",
@@ -296,7 +321,7 @@ mod tests {
     async fn emit_never_blocks_when_sink_unreachable() {
         let sink = AuditSink::start(true, "http://127.0.0.1:1/", Some("token"));
         for _ in 0..(QUEUE_CAPACITY * 8) {
-            sink.emit(AuditEvent::notice(
+            let _ = sink.emit(AuditEvent::notice(
                 "hindsight.incident.open",
                 "u",
                 "inc_1",

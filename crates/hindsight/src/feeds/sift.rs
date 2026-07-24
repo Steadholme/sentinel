@@ -1,14 +1,4 @@
-//! Sift logs feed — a READ-ONLY pool over Sift's own database.
-//!
-//! Sift's `/api/search` is SSO-gated, so Hindsight reads Sift's `logs` table directly over a
-//! lazily-connected, read-mostly Postgres pool (`SIFT_DATABASE_URL`). Only error/warn lines in
-//! the correlation window are pulled. The seam mirrors cortex's federation: handlers depend only
-//! on the async [`LogReader`] trait, so an in-memory fake ([`InMemoryLogReader`], used by tests +
-//! the DB-free dev path) and a live [`PgLogReader`] are interchangeable behind `Arc<dyn _>`.
-//!
-//! RESILIENCE: a query against a down Sift DB returns `Err`, which the timeline records as the
-//! Sift feed being "unavailable" — the rest of the timeline still renders. The pool is built with
-//! `connect_lazy`, so a down Sift DB never blocks startup.
+//! Typed, bounded Sift log acquisition.
 
 use std::time::Duration;
 
@@ -16,15 +6,14 @@ use async_trait::async_trait;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::Row;
 
-/// Per-query acquire timeout — a down Sift DB fails fast (and is marked unavailable) rather than
-/// hanging the page.
+use crate::view_contract::{BoundedRows, LogRecord, TruthError, ACQUISITION_CAP_BYTES};
+
 const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// One log line read from Sift (the subset Hindsight correlates).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LogRow {
     pub id: String,
-    pub ts: i64, // epoch SECONDS (Sift stamps `ts` in seconds)
+    pub ts: i64,
     pub host: String,
     pub app: String,
     pub severity: String,
@@ -32,84 +21,120 @@ pub struct LogRow {
     pub template_id: String,
 }
 
-/// A read-only source of recent error/warn log lines. `Err` means the source is
-/// unreachable/broken and should be marked unavailable, never surfaced as a page error.
-#[async_trait]
-pub trait LogReader: Send + Sync {
-    /// Error/warn log lines with `ts` in `[from, to]`, newest-first, capped at `limit`.
-    async fn recent_errors(&self, from: i64, to: i64, limit: i64) -> Result<Vec<LogRow>, String>;
+#[derive(Clone, Debug)]
+pub enum LogAcquisition {
+    ConfigurationAbsentOrInvalid,
+    Unavailable,
+    OversizeTruncated,
+    InvalidSchema,
+    Loaded {
+        rows: BoundedRows<LogRecord>,
+        acquired_from_ms: Option<i64>,
+        acquired_to_ms: Option<i64>,
+    },
 }
 
-// ---------------------------------------------------------------------------
-// In-memory fake reader (the DB-free default + tests).
-// ---------------------------------------------------------------------------
+#[async_trait]
+pub trait LogReader: Send + Sync {
+    async fn recent_errors(
+        &self,
+        from_inclusive_s: i64,
+        to_inclusive_s: i64,
+        limit_plus_one: usize,
+    ) -> LogAcquisition;
+}
 
-/// An in-memory [`LogReader`]. Holds plain rows and applies the same window/severity filter. Set
-/// `down = true` to simulate an unreachable Sift DB.
 #[derive(Default)]
 pub struct InMemoryLogReader {
     pub rows: Vec<LogRow>,
     pub down: bool,
+    pub configured: bool,
 }
 
 impl InMemoryLogReader {
-    /// An empty reader (the dev default: Sift not wired -> the feed is simply empty but reached).
     pub fn empty() -> Self {
+        Self {
+            configured: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn unconfigured() -> Self {
         Self::default()
     }
 
-    /// A reader seeded with `rows` (used by tests).
     pub fn with_rows(rows: Vec<LogRow>) -> Self {
-        Self { rows, down: false }
+        Self {
+            rows,
+            down: false,
+            configured: true,
+        }
     }
 
-    /// A reader that always errors (to exercise the unavailable-feed path).
     pub fn down() -> Self {
         Self {
             rows: Vec::new(),
             down: true,
+            configured: true,
         }
     }
 }
 
-/// True when a severity string denotes an error- or warning-class line (case-insensitive).
 pub fn is_error_severity(severity: &str) -> bool {
     matches!(
-        severity.trim().to_ascii_lowercase().as_str(),
+        severity.to_ascii_lowercase().as_str(),
         "error" | "err" | "crit" | "critical" | "fatal" | "alert" | "emerg" | "warn" | "warning"
     )
 }
 
 #[async_trait]
 impl LogReader for InMemoryLogReader {
-    async fn recent_errors(&self, from: i64, to: i64, limit: i64) -> Result<Vec<LogRow>, String> {
-        if self.down {
-            return Err("simulated Sift outage".to_string());
+    async fn recent_errors(
+        &self,
+        from_inclusive_s: i64,
+        to_inclusive_s: i64,
+        limit_plus_one: usize,
+    ) -> LogAcquisition {
+        if !self.configured {
+            return LogAcquisition::ConfigurationAbsentOrInvalid;
         }
-        let mut hits: Vec<LogRow> = self
+        if self.down {
+            return LogAcquisition::Unavailable;
+        }
+        let mut rows = self
             .rows
             .iter()
-            .filter(|r| r.ts >= from && r.ts <= to && is_error_severity(&r.severity))
+            .filter(|row| {
+                row.ts >= from_inclusive_s
+                    && row.ts <= to_inclusive_s
+                    && is_error_severity(&row.severity)
+            })
             .cloned()
-            .collect();
-        hits.sort_by(|a, b| b.ts.cmp(&a.ts).then_with(|| b.id.cmp(&a.id)));
-        hits.truncate(limit.max(0) as usize);
-        Ok(hits)
+            .collect::<Vec<_>>();
+        rows.sort_by(|left, right| {
+            right
+                .ts
+                .cmp(&left.ts)
+                .then_with(|| left.id.cmp(&right.id))
+                .then_with(|| left.template_id.cmp(&right.template_id))
+                .then_with(|| left.host.cmp(&right.host))
+                .then_with(|| left.app.cmp(&right.app))
+                .then_with(|| left.severity.cmp(&right.severity))
+                .then_with(|| left.message.cmp(&right.message))
+        });
+        rows.truncate(limit_plus_one);
+        let Some(limit) = limit_plus_one.checked_sub(1) else {
+            return LogAcquisition::InvalidSchema;
+        };
+        classify_rows(rows, limit)
     }
 }
 
-// ---------------------------------------------------------------------------
-// Postgres-backed reader (read-only, portable standard SQL, runtime queries).
-// ---------------------------------------------------------------------------
-
-/// Read-only Sift `logs` reader. Holds a lazily-connected pool to Sift's database.
 pub struct PgLogReader {
     pool: PgPool,
 }
 
 impl PgLogReader {
-    /// Build a lazily-connected, read-mostly pool to Sift's DSN. Never touches the network here —
-    /// a down Sift DB is discovered (and marked unavailable) only when the first query runs.
     pub fn connect_lazy(dsn: &str) -> Result<Self, sqlx::Error> {
         let pool = PgPoolOptions::new()
             .max_connections(4)
@@ -125,43 +150,116 @@ impl PgLogReader {
 
 #[async_trait]
 impl LogReader for PgLogReader {
-    async fn recent_errors(&self, from: i64, to: i64, limit: i64) -> Result<Vec<LogRow>, String> {
-        // Standard portable SQL: window on `ts`, severity allow-list, newest-first, bounded. The
-        // severity set is matched case-insensitively against the canonical error/warn vocabulary.
-        let rows = sqlx::query(
+    async fn recent_errors(
+        &self,
+        from_inclusive_s: i64,
+        to_inclusive_s: i64,
+        limit_plus_one: usize,
+    ) -> LogAcquisition {
+        let Ok(limit) = i64::try_from(limit_plus_one) else {
+            return LogAcquisition::InvalidSchema;
+        };
+        let rows = match sqlx::query(
             "SELECT id, ts, host, app, severity, message, template_id \
              FROM logs \
              WHERE ts >= $1 AND ts <= $2 \
                AND LOWER(severity) IN \
                    ('error','err','crit','critical','fatal','alert','emerg','warn','warning') \
-             ORDER BY ts DESC LIMIT $3",
+             ORDER BY ts DESC, \
+                      id COLLATE \"C\" ASC, template_id COLLATE \"C\" ASC, \
+                      host COLLATE \"C\" ASC, app COLLATE \"C\" ASC, \
+                      severity COLLATE \"C\" ASC, message COLLATE \"C\" ASC \
+             LIMIT $3",
         )
-        .bind(from)
-        .bind(to)
+        .bind(from_inclusive_s)
+        .bind(to_inclusive_s)
         .bind(limit)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| e.to_string())?;
+        {
+            Ok(rows) => rows,
+            Err(_) => return LogAcquisition::Unavailable,
+        };
 
-        rows.iter()
-            .map(|r| {
+        let mut decoded = Vec::with_capacity(rows.len());
+        for row in rows {
+            let decoded_row = (|| -> Result<LogRow, sqlx::Error> {
                 Ok(LogRow {
-                    id: r.try_get("id").map_err(|e: sqlx::Error| e.to_string())?,
-                    ts: r.try_get("ts").map_err(|e: sqlx::Error| e.to_string())?,
-                    host: r.try_get("host").map_err(|e: sqlx::Error| e.to_string())?,
-                    app: r.try_get("app").map_err(|e: sqlx::Error| e.to_string())?,
-                    severity: r
-                        .try_get("severity")
-                        .map_err(|e: sqlx::Error| e.to_string())?,
-                    message: r
-                        .try_get("message")
-                        .map_err(|e: sqlx::Error| e.to_string())?,
-                    template_id: r
-                        .try_get("template_id")
-                        .map_err(|e: sqlx::Error| e.to_string())?,
+                    id: row.try_get("id")?,
+                    ts: row.try_get("ts")?,
+                    host: row.try_get("host")?,
+                    app: row.try_get("app")?,
+                    severity: row.try_get("severity")?,
+                    message: row.try_get("message")?,
+                    template_id: row.try_get("template_id")?,
                 })
-            })
-            .collect()
+            })();
+            match decoded_row {
+                Ok(row) => decoded.push(row),
+                Err(_) => return LogAcquisition::InvalidSchema,
+            }
+        }
+        let Some(limit) = limit_plus_one.checked_sub(1) else {
+            return LogAcquisition::InvalidSchema;
+        };
+        classify_rows(decoded, limit)
+    }
+}
+
+fn classify_rows(rows: Vec<LogRow>, limit: usize) -> LogAcquisition {
+    let mut bytes = 0usize;
+    let mut acquired_from_ms = None;
+    let mut acquired_to_ms = None;
+    let mut records = Vec::with_capacity(rows.len());
+    for row in rows {
+        let Some(recorded_at_ms) = row.ts.checked_mul(1_000) else {
+            return LogAcquisition::InvalidSchema;
+        };
+        if row.id.is_empty() || row.ts <= 0 {
+            return LogAcquisition::InvalidSchema;
+        }
+        acquired_from_ms =
+            Some(acquired_from_ms.map_or(recorded_at_ms, |value: i64| value.min(recorded_at_ms)));
+        acquired_to_ms =
+            Some(acquired_to_ms.map_or(recorded_at_ms, |value: i64| value.max(recorded_at_ms)));
+        let string_bytes = [
+            row.id.len(),
+            row.template_id.len(),
+            row.host.len(),
+            row.app.len(),
+            row.severity.len(),
+            row.message.len(),
+        ]
+        .into_iter()
+        .try_fold(0usize, |total, length| total.checked_add(length));
+        let Some(row_bytes) = string_bytes.and_then(|total| total.checked_add(8)) else {
+            return LogAcquisition::OversizeTruncated;
+        };
+        let Some(next_bytes) = bytes.checked_add(row_bytes) else {
+            return LogAcquisition::OversizeTruncated;
+        };
+        if next_bytes > ACQUISITION_CAP_BYTES {
+            return LogAcquisition::OversizeTruncated;
+        }
+        bytes = next_bytes;
+        records.push(LogRecord {
+            id: row.id,
+            template_id: row.template_id,
+            recorded_at_s: row.ts,
+            host: row.host,
+            app: row.app,
+            severity: row.severity,
+            message: row.message,
+        });
+    }
+    match BoundedRows::from_limit_plus_one(records, limit) {
+        Ok(rows) => LogAcquisition::Loaded {
+            rows,
+            acquired_from_ms,
+            acquired_to_ms,
+        },
+        Err(TruthError::InvalidBound) => LogAcquisition::InvalidSchema,
+        Err(_) => LogAcquisition::InvalidSchema,
     }
 }
 
@@ -169,45 +267,59 @@ impl LogReader for PgLogReader {
 mod tests {
     use super::*;
 
-    fn row(id: &str, ts: i64, sev: &str) -> LogRow {
+    fn row(id: &str, ts: i64, severity: &str) -> LogRow {
         LogRow {
             id: id.to_string(),
             ts,
-            host: "h1".to_string(),
+            host: "host-a".to_string(),
             app: "api".to_string(),
-            severity: sev.to_string(),
-            message: format!("msg {id}"),
-            template_id: "t1".to_string(),
+            severity: severity.to_string(),
+            message: format!("message {id}"),
+            template_id: "template".to_string(),
         }
     }
 
-    #[test]
-    fn severity_classification() {
-        assert!(is_error_severity("ERROR"));
-        assert!(is_error_severity("Warning"));
-        assert!(is_error_severity("crit"));
-        assert!(!is_error_severity("info"));
-        assert!(!is_error_severity("debug"));
-        assert!(!is_error_severity("notice"));
-    }
-
     #[tokio::test]
-    async fn in_memory_filters_window_and_severity_newest_first() {
+    async fn in_memory_is_exact_and_limit_plus_one_bounded() {
         let reader = InMemoryLogReader::with_rows(vec![
             row("a", 100, "error"),
-            row("b", 150, "info"), // dropped: not error/warn
-            row("c", 200, "warn"),
-            row("d", 50, "error"),  // dropped: before window
-            row("e", 500, "error"), // dropped: after window
+            row("b", 200, "warn"),
+            row("c", 300, "info"),
         ]);
-        let hits = reader.recent_errors(80, 300, 10).await.unwrap();
-        let ids: Vec<&str> = hits.iter().map(|r| r.id.as_str()).collect();
-        assert_eq!(ids, vec!["c", "a"]);
+        let LogAcquisition::Loaded {
+            rows,
+            acquired_from_ms,
+            acquired_to_ms,
+        } = reader.recent_errors(1, 500, 2).await
+        else {
+            panic!("expected loaded");
+        };
+        assert_eq!(rows.rows.len(), 1);
+        assert_eq!(rows.acquired_count, 1);
+        assert_eq!(rows.rows[0].id, "b");
+        assert_eq!(acquired_from_ms, Some(100_000));
+        assert_eq!(acquired_to_ms, Some(200_000));
     }
 
     #[tokio::test]
-    async fn down_reader_errors() {
-        let reader = InMemoryLogReader::down();
-        assert!(reader.recent_errors(0, i64::MAX, 10).await.is_err());
+    async fn unconfigured_and_unavailable_are_distinct() {
+        assert!(matches!(
+            InMemoryLogReader::unconfigured()
+                .recent_errors(1, 2, 2)
+                .await,
+            LogAcquisition::ConfigurationAbsentOrInvalid
+        ));
+        assert!(matches!(
+            InMemoryLogReader::down().recent_errors(1, 2, 2).await,
+            LogAcquisition::Unavailable
+        ));
+    }
+
+    #[test]
+    fn overflowing_second_timestamp_is_invalid_schema() {
+        assert!(matches!(
+            classify_rows(vec![row("overflow", i64::MAX, "error")], 1),
+            LogAcquisition::InvalidSchema
+        ));
     }
 }

@@ -1,23 +1,20 @@
-//! HTTP handlers + shared server-render helpers.
-//!
-//! `health` is the unauthenticated liveness probe; `timeline` carries the SSO dashboard, the
-//! incident view, and the incident/note/timeline API.
-//!
-//! Odyssey canonical CSS plus Hindsight service CSS are embedded and inlined into every page.
+//! HTTP handlers and typed presentation helpers.
 
 pub mod health;
 pub mod timeline;
 
 use std::sync::OnceLock;
 
-use axum::http::StatusCode;
+use crate::error::ErrorCondition;
+use crate::view_contract::{
+    token, ComposeError, Composer, EscapedText, ProductRelativePath, RenderedFragment, Slot,
+    SlotValue, StaticCssValue, TemplateId, TokenDomain, TrustedStaticUrl,
+};
 
-/// Hindsight-only CSS layered after Odyssey's canonical font, tokens, and components.
 pub const SERVICE_CSS: &str = include_str!("../../static/service.css");
 
 static APP_CSS: OnceLock<String> = OnceLock::new();
 
-/// Embedded design system, inlined into each rendered page's `<style>`.
 pub fn app_css() -> &'static str {
     APP_CSS
         .get_or_init(|| {
@@ -29,95 +26,159 @@ pub fn app_css() -> &'static str {
         .as_str()
 }
 
-/// Cross-subdomain gateway logout (Hindsight lives at rca.w33d.xyz; the IdP is at id.w33d.xyz).
-pub const LOGOUT_URL: &str = "https://sso.w33d.xyz/_gw/auth/logout";
-
-/// The Steadholme shield glyph (small, for the app-bar brand lockup).
-pub const SHIELD_SVG: &str = r##"<svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="hf-shield-sm" x1="8" y1="4" x2="40" y2="44" gradientUnits="userSpaceOnUse"><stop stop-color="#818CF8"/><stop offset="1" stop-color="#4F46E5"/></linearGradient></defs><path d="M24 4 8 9.5V22c0 11 7 17.4 16 21.5C33 39.4 40 33 40 22V9.5L24 4Z" fill="url(#hf-shield-sm)"/><rect x="20" y="19" width="8" height="13" rx="1" fill="#fff" fill-opacity="0.92"/><path d="M20 19v-2.5a4 4 0 0 1 8 0V19" stroke="#fff" stroke-width="2" stroke-opacity="0.92" fill="none"/></svg>"##;
-
-/// Minimal HTML escaping for text/attribute interpolation (defense-in-depth on every field).
-pub fn esc(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
+pub fn validate_templates() -> Result<(), ComposeError> {
+    Composer::validate_all_templates()
 }
 
-/// Render the shared app-bar: shield + Steadholme wordmark on the left; the page title, an
-/// "All apps" link back to the apex portal, the signed-in user chip (avatar initial + email),
-/// and a Logout link to the gateway on the right. A blank `email` (no gateway identity) renders
-/// the public chrome — All apps link, but no user chip.
-pub fn topbar(page_title: &str, email: &str) -> String {
-    let chip = if email.is_empty() {
-        String::new()
-    } else {
-        let initial = email
-            .chars()
-            .next()
-            .map(|c| c.to_uppercase().to_string())
-            .unwrap_or_else(|| "H".to_string());
-        format!(
-            r#"<span class="userchip"><span class="userchip__avatar" aria-hidden="true">{initial}</span><span class="user-email">{email}</span></span>"#,
-            initial = esc(&initial),
-            email = esc(email),
-        )
-    };
-    format!(
-        r#"<header class="topbar">
-  <div class="topbar__inner">
-    <a class="brand" href="/" aria-label="Steadholme Hindsight">
-      <span class="brand__glyph" aria-hidden="true">{shield}</span>
-      <span class="brand__word">Steadholme</span>
-    </a>
-    <div class="topbar__right">
-      <span class="topbar__title">{title}</span>
-      <a class="allapps" href="https://w33d.xyz" title="All apps"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>All apps</a>
-      {chip}
-      <a class="btn btn-ghost btn-sm" href="{logout}">Log out</a>
-    </div>
-  </div>
-</header>"#,
-        shield = SHIELD_SVG,
-        title = esc(page_title),
-        chip = chip,
-        logout = LOGOUT_URL,
+pub fn render_topbar(
+    page_title: &str,
+    gateway_context: &str,
+    authenticated: bool,
+) -> Result<RenderedFragment, ComposeError> {
+    Composer::render(
+        TemplateId::Topbar,
+        vec![
+            (
+                Slot::TopbarPageTitleText,
+                SlotValue::Text(EscapedText::new(page_title)),
+            ),
+            (
+                Slot::GatewayContextText,
+                SlotValue::Text(EscapedText::new(gateway_context)),
+            ),
+            (
+                Slot::GatewayContextToken,
+                token(
+                    TokenDomain::GatewayContext,
+                    if authenticated {
+                        "authenticated"
+                    } else {
+                        "unavailable"
+                    },
+                ),
+            ),
+            (
+                Slot::PortalUrl,
+                SlotValue::TrustedStaticUrl(TrustedStaticUrl::Portal),
+            ),
+            (
+                Slot::LogoutUrl,
+                SlotValue::TrustedStaticUrl(TrustedStaticUrl::Logout),
+            ),
+        ],
     )
 }
 
-/// Format epoch seconds as a compact UTC datetime `Mon D, YYYY HH:MM` (e.g. `Jun 30, 2026 14:05`).
-/// std `time` only, no extra C deps. A `0`/negative stamp renders as a neutral em dash.
-pub fn fmt_datetime(secs: i64) -> String {
-    if secs <= 0 {
-        return "—".to_string();
+pub(crate) fn render_error_document(
+    condition: ErrorCondition,
+    authenticated_gateway_context: bool,
+) -> Result<String, ComposeError> {
+    let status = condition.status();
+    let topbar = render_topbar(
+        "Hindsight",
+        if authenticated_gateway_context {
+            "Authenticated gateway context"
+        } else {
+            "Authentication context unavailable"
+        },
+        authenticated_gateway_context,
+    )?;
+    Composer::render(
+        TemplateId::Error,
+        vec![
+            (
+                Slot::StaticCss,
+                SlotValue::StaticCss(StaticCssValue::application()),
+            ),
+            (Slot::TopbarFragment, SlotValue::Fragment(topbar)),
+            (
+                Slot::DocumentTitleText,
+                SlotValue::Text(EscapedText::new(format!("{} · Hindsight", status.as_u16()))),
+            ),
+            (
+                Slot::HeadingTitleText,
+                SlotValue::Text(EscapedText::new(condition.heading())),
+            ),
+            (
+                Slot::StatusCodeText,
+                SlotValue::Text(EscapedText::new(status.as_u16().to_string())),
+            ),
+            (
+                Slot::SafeMessageText,
+                SlotValue::Text(EscapedText::new(condition.message())),
+            ),
+            (
+                Slot::RecoveryPath,
+                SlotValue::ProductPath(ProductRelativePath::Root),
+            ),
+        ],
+    )
+    .map(RenderedFragment::into_string)
+}
+
+pub fn fmt_datetime_s(seconds: i64) -> String {
+    if seconds <= 0 {
+        return "Time not recorded".to_string();
     }
-    match time::OffsetDateTime::from_unix_timestamp(secs) {
-        Ok(dt) => format!(
-            "{} {}, {} {:02}:{:02} UTC",
-            month_abbr(dt.month()),
-            dt.day(),
-            dt.year(),
-            dt.hour(),
-            dt.minute(),
+    match time::OffsetDateTime::from_unix_timestamp(seconds) {
+        Ok(value) => format!(
+            "{} {}, {} {:02}:{:02}:{:02} UTC",
+            month_abbr(value.month()),
+            value.day(),
+            value.year(),
+            value.hour(),
+            value.minute(),
+            value.second(),
         ),
-        Err(_) => secs.to_string(),
+        Err(_) => "Time outside display range".to_string(),
     }
 }
 
-/// Format epoch seconds as a compact UTC date `Mon D, YYYY` (for the incident-card meta).
-pub fn fmt_date(secs: i64) -> String {
-    if secs <= 0 {
-        return "—".to_string();
+pub fn fmt_datetime_ms(milliseconds: i64) -> String {
+    if milliseconds <= 0 {
+        return "Time not recorded".to_string();
     }
-    match time::OffsetDateTime::from_unix_timestamp(secs) {
-        Ok(dt) => format!("{} {}, {}", month_abbr(dt.month()), dt.day(), dt.year()),
-        Err(_) => secs.to_string(),
+    let seconds = milliseconds.div_euclid(1_000);
+    let millis = milliseconds.rem_euclid(1_000);
+    match time::OffsetDateTime::from_unix_timestamp(seconds) {
+        Ok(value) => format!(
+            "{} {}, {} {:02}:{:02}:{:02}.{:03} UTC",
+            month_abbr(value.month()),
+            value.day(),
+            value.year(),
+            value.hour(),
+            value.minute(),
+            value.second(),
+            millis,
+        ),
+        Err(_) => "Time outside display range".to_string(),
     }
 }
 
-fn month_abbr(m: time::Month) -> &'static str {
+pub fn datetime_attribute_ms(milliseconds: i64) -> String {
+    if milliseconds <= 0 {
+        return String::new();
+    }
+    let seconds = milliseconds.div_euclid(1_000);
+    let millis = milliseconds.rem_euclid(1_000);
+    match time::OffsetDateTime::from_unix_timestamp(seconds) {
+        Ok(value) => format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+            value.year(),
+            value.month() as u8,
+            value.day(),
+            value.hour(),
+            value.minute(),
+            value.second(),
+            millis,
+        ),
+        Err(_) => String::new(),
+    }
+}
+
+fn month_abbr(month: time::Month) -> &'static str {
     use time::Month::*;
-    match m {
+    match month {
         January => "Jan",
         February => "Feb",
         March => "Mar",
@@ -131,53 +192,4 @@ fn month_abbr(m: time::Month) -> &'static str {
         November => "Nov",
         December => "Dec",
     }
-}
-
-/// Map a feed/event severity to the CSS dot/badge class (severity colour tokens).
-pub fn severity_class(severity: &str) -> &'static str {
-    match severity.trim().to_ascii_lowercase().as_str() {
-        "error" | "err" | "crit" | "critical" | "fatal" | "alert" | "emerg" | "warning"
-        | "warn" => "sev-error",
-        "notice" => "sev-notice",
-        _ => "sev-info",
-    }
-}
-
-/// Human label for a feed source (`watchtower` -> `Watchtower`).
-pub fn source_label(source: &str) -> &'static str {
-    match source {
-        crate::feeds::SRC_WATCHTOWER => "Watchtower",
-        crate::feeds::SRC_SIFT => "Sift",
-        crate::feeds::SRC_VITALS => "Vitals",
-        _ => "Event",
-    }
-}
-
-/// A small, branded HTML error page (used by [`crate::error::AppError`]).
-pub fn error_page(status: StatusCode, message: &str) -> String {
-    let code = status.as_u16();
-    let reason = status.canonical_reason().unwrap_or("Error");
-    format!(
-        r#"<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark light">
-<title>{code} {reason} · Hindsight</title><style>{css}</style></head>
-<body class="page-app">
-{topbar}
-<main class="shell">
-  <div class="error-card">
-    <div class="error-card__code">{code}</div>
-    <h1 class="error-card__title">{reason}</h1>
-    <p class="error-card__msg">{msg}</p>
-    <a class="btn btn-primary" href="/">Back to the timeline</a>
-  </div>
-</main>
-</body></html>"#,
-        css = app_css(),
-        topbar = topbar("Hindsight", "operator"),
-        code = code,
-        reason = esc(reason),
-        msg = esc(message),
-    )
 }

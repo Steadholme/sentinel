@@ -18,7 +18,8 @@
 //! - `GET  /incident/{id}`              one incident + its merged evidence window + notes
 //! - `POST /api/incidents`              open an incident over a time window (CSRF)
 //! - `POST /api/incidents/{id}/notes`   thread a note onto an incident (CSRF)
-//! - `GET  /api/timeline?from=&to=`     JSON merged timeline
+//! - `POST /api/incidents/{id}/resolve` atomically resolve an incident (CSRF)
+//! - `GET  /api/timeline`               JSON v2 comparison + legacy seconds fields
 
 pub mod audit;
 pub mod auth;
@@ -28,10 +29,15 @@ pub mod feeds;
 pub mod handlers;
 pub mod http;
 pub mod store;
+pub mod view_contract;
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use axum::extract::Request;
+use axum::http::{header, HeaderValue};
+use axum::middleware::{self, Next};
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::Router;
 
@@ -51,6 +57,7 @@ pub struct AppState {
 
 /// Build the router wiring all endpoints onto `state`.
 pub fn app(state: AppState) -> Router {
+    handlers::validate_templates().expect("Hindsight static template contract invalid");
     Router::new()
         .route("/healthz", get(handlers::health::healthz))
         .route("/", get(handlers::timeline::dashboard))
@@ -60,7 +67,14 @@ pub fn app(state: AppState) -> Router {
             "/api/incidents/{id}/notes",
             post(handlers::timeline::add_note),
         )
+        .route(
+            "/api/incidents/{id}/resolve",
+            post(handlers::timeline::resolve_incident),
+        )
         .route("/api/timeline", get(handlers::timeline::timeline_json))
+        .method_not_allowed_fallback(handlers::timeline::method_not_allowed)
+        .fallback(handlers::timeline::route_not_found)
+        .layer(middleware::from_fn(response_security))
         .with_state(state)
 }
 
@@ -93,7 +107,7 @@ pub fn build_state_with(store: Arc<dyn Store>, logs: Arc<dyn LogReader>) -> AppS
 /// - `postgres`: connect `DATABASE_URL`, run the idempotent migration, wire [`PgStore`].
 ///
 /// The Sift logs feed is wired from `SIFT_DATABASE_URL` (a READ-ONLY, lazily-connected pool) when
-/// set; otherwise the feed is empty (but reached). The audit emitter is wired from
+/// set; otherwise that channel is explicitly unconfigured. The audit emitter is wired from
 /// `AUDIT_ENABLED` / `WATCHTOWER_URL` / `AUDIT_INGEST_TOKEN`.
 ///
 /// Returns an error string on misconfiguration so `main` can fail loudly.
@@ -108,34 +122,32 @@ pub async fn build_state_from_env() -> Result<AppState, String> {
             tracing::info!("HINDSIGHT_STORE=postgres — connecting to database");
             let pg = PgStore::connect(&database_url)
                 .await
-                .map_err(|e| format!("connect postgres: {e}"))?;
+                .map_err(|_| "connect postgres failed".to_string())?;
             pg.migrate()
                 .await
-                .map_err(|e| format!("run migration: {e}"))?;
+                .map_err(|_| "Hindsight migration or preflight failed".to_string())?;
             tracing::info!("postgres store ready (migrated)");
             Arc::new(pg)
         }
         "memory" => Arc::new(InMemoryStore::new()),
-        other => {
-            return Err(format!(
-                "unknown HINDSIGHT_STORE={other} (use memory|postgres)"
-            ))
-        }
+        _ => return Err("unknown HINDSIGHT_STORE (use memory|postgres)".to_string()),
     };
 
     // Read-only Sift logs feed (lazily connected — a down Sift DB never blocks startup).
     let logs: Arc<dyn LogReader> = match env_nonempty("SIFT_DATABASE_URL") {
-        Some(dsn) => {
-            let reader =
-                PgLogReader::connect_lazy(&dsn).map_err(|e| format!("SIFT_DATABASE_URL: {e}"))?;
-            tracing::info!("Sift logs feed wired (read-only pool)");
-            Arc::new(reader)
-        }
+        Some(dsn) => match PgLogReader::connect_lazy(&dsn) {
+            Ok(reader) => {
+                tracing::info!("Sift logs feed wired (read-only pool)");
+                Arc::new(reader)
+            }
+            Err(_) => {
+                tracing::warn!("Sift logs feed configuration invalid");
+                Arc::new(InMemoryLogReader::unconfigured())
+            }
+        },
         None => {
-            tracing::warn!(
-                "SIFT_DATABASE_URL unset — the Sift logs feed will be empty. Set it to correlate logs."
-            );
-            Arc::new(InMemoryLogReader::empty())
+            tracing::warn!("SIFT_DATABASE_URL unset — the log channel is configuration-absent");
+            Arc::new(InMemoryLogReader::unconfigured())
         }
     };
 
@@ -157,18 +169,53 @@ pub async fn build_state_from_env() -> Result<AppState, String> {
     })
 }
 
-/// Current wall-clock time in epoch seconds (incident timestamps + window math).
-pub fn now_secs() -> i64 {
-    SystemTime::now()
+/// Current wall-clock time in epoch milliseconds, resolved once per request.
+pub fn now_millis() -> i64 {
+    let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock before UNIX epoch")
-        .as_secs() as i64
+        .as_millis();
+    i64::try_from(millis).expect("system clock outside signed millisecond range")
 }
 
-/// Monotonic-ish nanosecond counter for incident/note ids.
-pub fn now_nanos() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before UNIX epoch")
-        .as_nanos()
+/// Current wall-clock time in epoch seconds.
+pub fn now_secs() -> i64 {
+    now_millis().div_euclid(1_000)
+}
+
+async fn response_security(request: Request, next: Next) -> Response {
+    let health_candidate = request.uri().path() == "/healthz"
+        && matches!(
+            *request.method(),
+            axum::http::Method::GET | axum::http::Method::HEAD
+        );
+    let mut response = next.run(request).await;
+    let health = health_candidate && response.status().is_success();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(if health {
+            "no-store"
+        } else {
+            "private, no-store"
+        }),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    if !health {
+        headers.insert(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        );
+        headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+            ),
+        );
+    }
+    response
 }

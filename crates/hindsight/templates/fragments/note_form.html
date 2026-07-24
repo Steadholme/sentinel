@@ -1,0 +1,15 @@
+<section class="hd-note">
+  <h2 class="hd-note__title">Add an operator note</h2>
+  [[W33D:NOTE_ERROR_SUMMARY_FRAGMENT]]
+  <form class="hd-form" id="note-form" method="post" action="[[W33D:NOTE_ACTION_PATH]]" novalidate>
+    <input type="hidden" name="incident_id" value="[[W33D:MUTATION_INCIDENT_ID_VALUE_ATTRIBUTE]]">
+    <input type="hidden" name="csrf_token" value="[[W33D:CSRF_VALUE_ATTRIBUTE]]">
+    <div class="hd-control">
+      <label class="hd-label" for="note-body">Operator note</label>
+      <p class="hd-hint" id="note-body-hint">Record what a human operator observed or decided. Up to 4,000 characters.</p>
+      <textarea class="hd-textarea" id="note-body" name="body" rows="6" aria-invalid="[[W33D:NOTE_BODY_INVALID_TOKEN]]" aria-describedby="note-body-hint note-body-error">[[W33D:NOTE_BODY_TEXT]]</textarea>
+      <p class="hd-field-error" id="note-body-error"[[W33D:NOTE_BODY_ERROR_HIDDEN_ATTRIBUTE]]>[[W33D:NOTE_BODY_ERROR_TEXT]]</p>
+    </div>
+    <button class="btn btn-primary hd-form__submit" type="submit">Add note</button>
+  </form>
+</section>

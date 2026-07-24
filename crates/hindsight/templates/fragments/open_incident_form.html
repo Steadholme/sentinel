@@ -1,0 +1,41 @@
+<section class="hd-open">
+  <h2 class="hd-open__title">Open an incident</h2>
+  [[W33D:OPEN_ERROR_SUMMARY_FRAGMENT]]
+  <form class="hd-form" id="open-incident-form" method="post" action="[[W33D:OPEN_ACTION_PATH]]" novalidate>
+    <input type="hidden" name="csrf_token" value="[[W33D:CSRF_VALUE_ATTRIBUTE]]">
+    <div class="hd-control">
+      <label class="hd-label" for="open-title">Incident title</label>
+      <p class="hd-hint" id="open-title-hint">One line of operator prose, up to 160 characters.</p>
+      <input class="hd-input" id="open-title" name="title" type="text" value="[[W33D:OPEN_TITLE_VALUE_ATTRIBUTE]]" aria-invalid="[[W33D:OPEN_TITLE_INVALID_TOKEN]]" aria-describedby="open-title-hint open-title-error">
+      <p class="hd-field-error" id="open-title-error"[[W33D:OPEN_TITLE_ERROR_HIDDEN_ATTRIBUTE]]>[[W33D:OPEN_TITLE_ERROR_TEXT]]</p>
+    </div>
+    <fieldset class="hd-control hd-window" id="open-window" aria-invalid="[[W33D:OPEN_WINDOW_INVALID_TOKEN]]" aria-describedby="open-window-hint open-window-error">
+      <legend class="hd-label">Comparison window</legend>
+      <p class="hd-hint" id="open-window-hint">Choose how far back from the observation instant the register reads.</p>
+      <ol class="hd-window__options">
+        <li class="hd-window__option">
+          <input class="hd-window__radio" type="radio" id="open-window-1" name="window_hours" value="1"[[W33D:OPEN_WINDOW_1_CHECKED_ATTRIBUTE]]>
+          <label class="hd-window__radio-label" for="open-window-1">1 hour</label>
+        </li>
+        <li class="hd-window__option">
+          <input class="hd-window__radio" type="radio" id="open-window-6" name="window_hours" value="6"[[W33D:OPEN_WINDOW_6_CHECKED_ATTRIBUTE]]>
+          <label class="hd-window__radio-label" for="open-window-6">6 hours</label>
+        </li>
+        <li class="hd-window__option">
+          <input class="hd-window__radio" type="radio" id="open-window-24" name="window_hours" value="24"[[W33D:OPEN_WINDOW_24_CHECKED_ATTRIBUTE]]>
+          <label class="hd-window__radio-label" for="open-window-24">24 hours</label>
+        </li>
+        <li class="hd-window__option">
+          <input class="hd-window__radio" type="radio" id="open-window-72" name="window_hours" value="72"[[W33D:OPEN_WINDOW_72_CHECKED_ATTRIBUTE]]>
+          <label class="hd-window__radio-label" for="open-window-72">72 hours</label>
+        </li>
+        <li class="hd-window__option">
+          <input class="hd-window__radio" type="radio" id="open-window-168" name="window_hours" value="168"[[W33D:OPEN_WINDOW_168_CHECKED_ATTRIBUTE]]>
+          <label class="hd-window__radio-label" for="open-window-168">168 hours</label>
+        </li>
+      </ol>
+      <p class="hd-field-error" id="open-window-error"[[W33D:OPEN_WINDOW_ERROR_HIDDEN_ATTRIBUTE]]>[[W33D:OPEN_WINDOW_ERROR_TEXT]]</p>
+    </fieldset>
+    <button class="btn btn-primary hd-form__submit" type="submit">Open incident</button>
+  </form>
+</section>

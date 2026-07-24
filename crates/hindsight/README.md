@@ -1,64 +1,103 @@
-# Hindsight — incident timeline / RCA correlator
+# Hindsight — incident evidence comparator
 
-The observability **capstone** of the Steadholme estate. Hindsight correlates metrics + logs +
-audit into one queryable, time-ordered **incident timeline**, lets operators **open incidents**
-over a window, and threads **notes** onto them for root-cause analysis.
+Hindsight is the Steadholme operator surface for comparing Watchtower audit records, Sift
+log records, and Vitals metric classifications over one explicit time window. It presents an
+evidence register; it does not infer a root cause, rewrite source payloads, or hide a degraded
+source behind an empty result.
 
-Internal-only, behind Sluice at `rca.w33d.xyz` (`auth=sso`). No login UI of its own — it trusts
-the gateway-injected `X-Auth-Subject` / `X-Auth-Email` / `X-Auth-Scope` and strips any inbound
-copies.
+The service is internal-only behind Sluice at `rca.w33d.xyz` with `auth=sso`. It has no login
+screen. Every read and mutation route independently requires the bounded
+`X-Auth-Subject` gateway identity; `X-Auth-Email` is optional display metadata and is never an
+authority.
 
-## Data sources (resilient, concurrent)
+## Evidence model
 
-The timeline merges three feeds, fetched concurrently. Any down source degrades to
-**"unavailable"** — the page never crashes.
+The three source channels are acquired independently and retain their own state, coverage,
+counts, boundedness, source keys, and payload tuples. A failed channel does not erase a loaded
+sibling. Exact duplicates collapse; same-key, different-payload records remain visible as a
+conflict. Millisecond evidence stays millisecond-precise, while the legacy JSON fields keep
+their established seconds-based names, types, units, and source labels.
 
-| Feed | Transport | Endpoint / table |
-|------|-----------|------------------|
-| Watchtower audit events | plain HTTP (open internally) | `GET http://watchtower:8500/api/events?limit=N` |
-| Sift error/warn logs | READ-ONLY Postgres pool | `SIFT_DATABASE_URL` → `logs` table |
-| Vitals anomalies | plain HTTP (open internally) | `GET http://vitals:8300/api/metrics?since=` |
+The acquisition states distinguish:
 
-All timestamps are normalized to **epoch seconds** before merge (Watchtower stamps `ts` in ms).
+- configuration absent or invalid;
+- transport unavailable;
+- non-success HTTP response;
+- oversize/truncated response;
+- invalid source schema;
+- loaded evidence.
 
-## Endpoints
+The displayed evidence budget is global and deterministic. Source-preserving allocation,
+clipping, lower-bound coverage, and completeness gaps are shown as presentation truth instead
+of being converted into a generic “available” flag.
+
+## Routes
 
 | Method | Path | Auth | Purpose |
-|--------|------|------|---------|
-| GET | `/` | sso | Dashboard: merged timeline over a window + incidents list |
-| GET | `/incident/{id}` | sso | One incident + its merged evidence window + notes |
-| POST | `/api/incidents` | sso + CSRF | Open an incident over a time window |
-| POST | `/api/incidents/{id}/notes` | sso + CSRF | Thread a note onto an incident |
-| GET | `/api/timeline?from=&to=` | sso | JSON merged timeline |
-| GET | `/healthz` | none | Liveness (container HEALTHCHECK) |
+|---|---|---|---|
+| `GET` | `/healthz` | none | Container liveness only; it is not readiness |
+| `GET` | `/` | SSO subject | Dashboard, three evidence channels, and bounded incident register |
+| `GET` | `/incident/{id}` | SSO subject | Frozen incident window, evidence, notes, and resolution mark |
+| `GET` | `/api/timeline?from=&to=` | SSO subject | Legacy seconds-compatible fields plus JSON v2 truth |
+| `GET` | `/api/timeline?from_ms=&to_ms=` | SSO subject | Exact millisecond JSON v2 window |
+| `POST` | `/api/incidents` | SSO subject + CSRF | Open an incident |
+| `POST` | `/api/incidents/{id}/notes` | SSO subject + CSRF | Add an operator note |
+| `POST` | `/api/incidents/{id}/resolve` | SSO subject + CSRF | Atomically resolve with an idempotency command |
 
-Opening an incident emits a non-blocking `hindsight.incident.open` audit event to Watchtower.
+Queries and native forms use closed schemas: unknown fields, duplicates, malformed
+percent-encoding, invalid UTF-8, oversized bodies, and mixed legacy/exact JSON window families
+are rejected. Mutation redirects are closed product-relative paths. A resolution persists one
+observation instant and one public mark; same-command retries return the same truth, while a
+different command receives a safe conflict response.
 
-## Storage
+Opening an incident makes one best-effort, non-blocking Watchtower audit attempt. The UI never
+claims that the event was enqueued, delivered, or stored. Adding a note and resolving an incident
+do not emit audit events.
 
-Boots **zero-config** in-memory (`HINDSIGHT_STORE=memory`, the default). For persistence set
-`HINDSIGHT_STORE=postgres` + `DATABASE_URL`; the schema (portable standard SQL only, runtime
-queries — no macros, no vendor types) is migrated on startup:
+## Storage and migration
 
-- `incidents(id, title, status, from_ts, to_ts, created_by, created_at)`
-- `notes(id, incident_id, body, author_sub, created_at)`
+`HINDSIGHT_STORE=memory` is the zero-configuration default. Persistent deployments use
+`HINDSIGHT_STORE=postgres` with `DATABASE_URL`.
 
-## Configuration
+The PostgreSQL migration is additive and transactional. It:
 
-| Env | Default | Purpose |
-|-----|---------|---------|
+- performs a read-only legacy census before changing schema;
+- preserves legacy `created_by` values as unclassified actor truth;
+- adds verified actor subject and optional display-email columns;
+- adds `resolution_marks` with unique command and public-mark identities;
+- validates the post-migration schema fingerprint before the service is ready.
+
+Invalid legacy lifecycle values, malformed identifiers, inconsistent timestamps, and orphaned
+notes fail closed. Rollback means running the previous image against the additive schema; it does
+not delete the new columns or `resolution_marks`.
+
+## Source configuration
+
+| Environment variable | Default | Purpose |
+|---|---|---|
 | `BIND_ADDR` | `0.0.0.0:9180` | Listen address |
 | `HINDSIGHT_STORE` | `memory` | `memory` or `postgres` |
-| `DATABASE_URL` | — | Own incidents/notes DB (required when `postgres`) |
-| `SIFT_DATABASE_URL` | — | READ-ONLY Sift logs DB (feed empty if unset) |
+| `DATABASE_URL` | — | Hindsight-owned PostgreSQL database |
+| `SIFT_DATABASE_URL` | — | Read-only Sift PostgreSQL source; unset is explicitly unconfigured |
 | `VITALS_URL` | `http://vitals:8300` | Vitals base URL |
-| `WATCHTOWER_URL` | `http://watchtower:8500` | Watchtower base URL (events + audit ingest) |
-| `AUDIT_ENABLED` | `false` | Enable the non-blocking Watchtower audit emitter |
-| `AUDIT_INGEST_TOKEN` | — | Bearer token for audit ingest |
+| `WATCHTOWER_URL` | `http://watchtower:8500` | Watchtower read and audit-ingest base URL |
+| `AUDIT_ENABLED` | `false` | Enable the best-effort open-incident audit attempt |
+| `AUDIT_INGEST_TOKEN` | — | Bearer token for Watchtower ingest |
 
-## Build / test
+Outbound source acquisition is bounded, strict UTF-8, and fail-closed. Logs and errors must not
+contain URLs, DSNs, bearer tokens, response bodies, SQL text, or raw transport/database errors.
+
+## Build and test
+
+From the Sentinel repository root:
 
 ```sh
-CARGO_BUILD_JOBS=2 cargo check --all-targets
-cargo test
+cargo fmt --manifest-path crates/hindsight/Cargo.toml -- --check
+cargo check --manifest-path crates/hindsight/Cargo.toml --all-targets
+cargo test --manifest-path crates/hindsight/Cargo.toml
+cargo test --all-targets
 ```
+
+The PostgreSQL concurrency and migration contract tests require a dedicated disposable test DSN.
+Browser, accessibility, response-header, and live source probes are release gates for the joint
+Sentinel deployment rather than substitutes for the Rust contract suite.

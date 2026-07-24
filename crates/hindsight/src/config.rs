@@ -4,11 +4,13 @@
 //! in-memory dev path boots with NO configuration and NO database — exactly like the rest of
 //! the estate. Production overrides each via the environment.
 //!
-//! Hindsight reads from THREE upstreams to build its merged timeline:
+//! Hindsight reads from three upstreams to build its evidence comparison:
+//!
 //! - Vitals metrics over plain HTTP (`<VITALS_URL>/api/metrics`, open internally);
 //! - Watchtower events over plain HTTP (`<WATCHTOWER_URL>/api/events`, open internally);
 //! - Sift logs over a READ-ONLY Postgres pool (`SIFT_DATABASE_URL`, Sift's `logs` table).
-//! Any down upstream degrades to "unavailable" — it never blocks or fails a page.
+//!
+//! Each unavailable upstream degrades only its own evidence channel.
 
 /// Default listen address (all interfaces, internal-only port 9180).
 pub const DEFAULT_BIND_ADDR: &str = "0.0.0.0:9180";
@@ -20,10 +22,20 @@ pub const DEFAULT_WATCHTOWER_URL: &str = "http://watchtower:8500";
 
 /// Hard cap on how many incidents the list renders (keeps an unbounded list bounded).
 pub const LIST_LIMIT: usize = 200;
+/// Hard cap on notes rendered for one incident.
+pub const NOTE_LIMIT: usize = 200;
 /// Default timeline window, in hours, when the dashboard is loaded without a `?window=` choice.
 pub const DEFAULT_WINDOW_HOURS: i64 = 24;
 /// Hard cap on merged timeline events returned per request (bounds work + page length).
 pub const TIMELINE_LIMIT: usize = 300;
+/// Complete encoded native-form body cap.
+pub const FORM_BODY_CAP: usize = 32_768;
+/// Complete decoded acquisition body cap for each evidence channel.
+pub const ACQUISITION_BODY_CAP: usize = 4_194_304;
+/// Exact product window choices.
+pub const WINDOW_CHOICES: [i64; 5] = [1, 6, 24, 72, 168];
+/// Maximum accepted window width.
+pub const MAX_WINDOW_HOURS: i64 = 720;
 
 /// Runtime configuration. Cheap to clone; shared read-only behind `Arc`.
 #[derive(Clone, Debug)]
