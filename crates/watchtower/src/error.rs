@@ -23,6 +23,10 @@ pub enum AppError {
     #[error("forbidden: {0}")]
     Forbidden(String),
 
+    /// A producer reused an idempotency key for different event content.
+    #[error("idempotency_conflict: {0}")]
+    IdempotencyConflict(String),
+
     /// Unexpected internal failure (store I/O).
     #[error("server_error: {0}")]
     Internal(String),
@@ -38,6 +42,12 @@ impl AppError {
                 (StatusCode::UNAUTHORIZED, "unauthorized", d.clone(), true)
             }
             AppError::Forbidden(d) => (StatusCode::FORBIDDEN, "forbidden", d.clone(), false),
+            AppError::IdempotencyConflict(d) => (
+                StatusCode::CONFLICT,
+                "idempotency_conflict",
+                d.clone(),
+                false,
+            ),
             AppError::Internal(d) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "server_error",
@@ -65,10 +75,15 @@ impl IntoResponse for AppError {
     }
 }
 
-/// Store failures collapse to a 500 server_error — the chain itself is never wrong, only
-/// the underlying storage can fail (DB I/O).
+/// An idempotency misuse is a stable producer-visible conflict; backend failures remain 500.
 impl From<crate::store::StoreError> for AppError {
     fn from(e: crate::store::StoreError) -> Self {
-        AppError::Internal(e.to_string())
+        match e {
+            crate::store::StoreError::IdempotencyConflict => AppError::IdempotencyConflict(
+                "the same source and Idempotency-Key were already committed with different event content"
+                    .to_string(),
+            ),
+            other => AppError::Internal(other.to_string()),
+        }
     }
 }

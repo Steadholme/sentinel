@@ -1,14 +1,13 @@
 //! Concurrency STRESS test for the PostgreSQL store (liveness / no-wedge guarantee).
 //!
-//! Runs ONLY when `STRESS_DATABASE_URL` is set (it needs an external Postgres). When unset the
-//! test prints a note and returns early — it never fails the default `cargo test` run, which
-//! stays database-free. Spin up a throwaway Postgres and run:
+//! Explicitly ignored by the default database-free test run. Spin up a throwaway Postgres and
+//! run the ignored gate with `STRESS_DATABASE_URL`:
 //!
 //! ```text
 //! docker run --rm -d --name wt-stresspg -e POSTGRES_PASSWORD=pw -e POSTGRES_DB=watchtower \
 //!   -p 127.0.0.1:55443:5432 postgres:18-alpine
 //! STRESS_DATABASE_URL=postgres://postgres:pw@127.0.0.1:55443/watchtower \
-//!   cargo test --test pg_stress -- --nocapture
+//!   cargo test --test pg_stress -- --ignored --nocapture
 //! docker rm -f wt-stresspg
 //! ```
 //!
@@ -56,14 +55,10 @@ const HEALTH_DEADLINE: Duration = Duration::from_secs(2);
 const TOTAL_DEADLINE: Duration = Duration::from_secs(45);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires STRESS_DATABASE_URL; run this PostgreSQL gate explicitly with --ignored"]
 async fn concurrent_reads_appends_and_healthz_never_wedge() {
-    let Ok(url) = std::env::var("STRESS_DATABASE_URL") else {
-        eprintln!(
-            "NOTE: STRESS_DATABASE_URL not set — skipping Postgres concurrency stress test (needs \
-             external Postgres). This is expected for the default test run."
-        );
-        return;
-    };
+    let url = std::env::var("STRESS_DATABASE_URL")
+        .expect("STRESS_DATABASE_URL must be set for the explicit PostgreSQL stress gate");
 
     // --- connect / migrate / clean slate -----------------------------------
     let pg = PgStore::connect(&url)
@@ -73,6 +68,10 @@ async fn concurrent_reads_appends_and_healthz_never_wedge() {
     let raw = PgPoolOptions::new()
         .max_connections(2)
         .connect(&url)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM audit_idempotency_keys")
+        .execute(&raw)
         .await
         .unwrap();
     sqlx::query("DELETE FROM audit_events")
@@ -205,6 +204,10 @@ async fn concurrent_reads_appends_and_healthz_never_wedge() {
         HEALTH_DEADLINE.as_millis(),
     );
 
+    sqlx::query("DELETE FROM audit_idempotency_keys")
+        .execute(&raw)
+        .await
+        .unwrap();
     sqlx::query("DELETE FROM audit_events")
         .execute(&raw)
         .await

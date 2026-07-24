@@ -35,12 +35,23 @@ fn get(uri: &str) -> Request<Body> {
 }
 
 fn post_event(token: Option<&str>, json: Value) -> Request<Body> {
+    post_event_with_key(token, None, json)
+}
+
+fn post_event_with_key(
+    token: Option<&str>,
+    idempotency_key: Option<&str>,
+    json: Value,
+) -> Request<Body> {
     let mut b = Request::builder()
         .method("POST")
         .uri("/events")
         .header(header::CONTENT_TYPE, "application/json");
     if let Some(t) = token {
         b = b.header(header::AUTHORIZATION, format!("Bearer {t}"));
+    }
+    if let Some(key) = idempotency_key {
+        b = b.header("idempotency-key", key);
     }
     b.body(Body::from(json.to_string())).unwrap()
 }
@@ -172,6 +183,111 @@ async fn ingest_requires_the_bearer_token() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn idempotency_key_replays_the_original_event_without_extending_the_chain() {
+    const MURMUR_STABLE_KEY: &str =
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let state = build_dev_state();
+    let murmur_body = serde_json::json!({
+        "actor": "u_admin", "action": "murmur.message.send", "target": "room_42",
+        "severity": "info", "detail": "message m_123", "source": "murmur"
+    });
+
+    // Treat the first 2xx as lost and retry the exact operation. The authoritative response is
+    // byte-for-byte the original sealed event, including seq/ts/hash.
+    let (status, original) = json_call(
+        &state,
+        post_event_with_key(
+            Some(DEFAULT_INGEST_TOKEN),
+            Some(MURMUR_STABLE_KEY),
+            murmur_body.clone(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, replay) = json_call(
+        &state,
+        post_event_with_key(
+            Some(DEFAULT_INGEST_TOKEN),
+            Some(MURMUR_STABLE_KEY),
+            murmur_body.clone(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(replay, original, "retry returns the original AuditEvent");
+
+    // Keys are namespaced by producer/source, so another producer may use the same opaque key.
+    let sluice_body = serde_json::json!({
+        "actor": "u_admin", "action": "gateway.allow", "target": "room_42",
+        "severity": "info", "detail": "message m_123", "source": "sluice"
+    });
+    let (status, other_source) = json_call(
+        &state,
+        post_event_with_key(
+            Some(DEFAULT_INGEST_TOKEN),
+            Some(MURMUR_STABLE_KEY),
+            sluice_body,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(other_source["seq"], 2);
+
+    // No header preserves the legacy append-every-attempt contract.
+    let (_, legacy_one) = json_call(
+        &state,
+        post_event(Some(DEFAULT_INGEST_TOKEN), murmur_body.clone()),
+    )
+    .await;
+    let (_, legacy_two) = json_call(
+        &state,
+        post_event(Some(DEFAULT_INGEST_TOKEN), murmur_body.clone()),
+    )
+    .await;
+    assert_eq!(legacy_one["seq"], 3);
+    assert_eq!(legacy_two["seq"], 4);
+
+    // Reusing a source-scoped key for different producer content fails closed.
+    let mut changed = murmur_body;
+    changed["detail"] = Value::String("different message".to_string());
+    let (status, conflict) = json_call(
+        &state,
+        post_event_with_key(Some(DEFAULT_INGEST_TOKEN), Some(MURMUR_STABLE_KEY), changed),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(conflict["error"], "idempotency_conflict");
+
+    let (status, invalid) = json_call(
+        &state,
+        post_event_with_key(
+            Some(DEFAULT_INGEST_TOKEN),
+            Some("not*stable"),
+            serde_json::json!({"source": "murmur"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(invalid["error"], "invalid_request");
+
+    let (status, uppercase) = json_call(
+        &state,
+        post_event_with_key(
+            Some(DEFAULT_INGEST_TOKEN),
+            Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+            serde_json::json!({"source": "murmur"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(uppercase["error"], "invalid_request");
+
+    let (_, verified) = json_call(&state, get("/api/verify")).await;
+    assert_eq!(verified["ok"], true);
+    assert_eq!(verified["count"], 4, "replay/conflict/invalid add no rows");
 }
 
 #[tokio::test]

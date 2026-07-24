@@ -64,14 +64,27 @@ fn post_rule_json(
 }
 
 fn post_event(action: &str, actor: &str, severity: &str) -> Request<Body> {
-    Request::builder()
+    post_event_with_key(action, actor, severity, None)
+}
+
+fn post_event_with_key(
+    action: &str,
+    actor: &str,
+    severity: &str,
+    idempotency_key: Option<&str>,
+) -> Request<Body> {
+    let mut builder = Request::builder()
         .method("POST")
         .uri("/events")
         .header(header::CONTENT_TYPE, "application/json")
         .header(
             header::AUTHORIZATION,
             format!("Bearer {DEFAULT_INGEST_TOKEN}"),
-        )
+        );
+    if let Some(key) = idempotency_key {
+        builder = builder.header("idempotency-key", key);
+    }
+    builder
         .body(Body::from(
             serde_json::json!({
                 "actor": actor,
@@ -128,10 +141,26 @@ async fn alert_rules_mark_future_matching_events() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(rules.as_array().unwrap().len(), 1);
 
-    let (status, event) = json_call(&state, post_event("login.failure", "u_bob", "warning")).await;
+    const STABLE_KEY: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let (status, event) = json_call(
+        &state,
+        post_event_with_key("login.failure", "u_bob", "warning", Some(STABLE_KEY)),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(event["action"], "login.failure");
     let matching_seq = event["seq"].as_i64().unwrap();
+
+    let (status, replay) = json_call(
+        &state,
+        post_event_with_key("login.failure", "u_bob", "warning", Some(STABLE_KEY)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        replay, event,
+        "idempotent replay returns the original event"
+    );
 
     let (status, _) = json_call(&state, post_event("login.success", "u_bob", "info")).await;
     assert_eq!(status, StatusCode::OK);

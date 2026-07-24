@@ -1,7 +1,8 @@
 //! Ingest + read APIs.
 //!
 //! - `POST /events`     — append one event (bearer `AUDIT_INGEST_TOKEN`). The server assigns
-//!   `ts`, `seq`, `prev_hash`, and the committed `hash`; the producer only supplies content.
+//!   `ts`, `seq`, `prev_hash`, and the committed `hash`; an optional `Idempotency-Key` makes a
+//!   producer/source-scoped retry return the original event without extending the chain.
 //! - `GET  /api/verify` — recompute the whole chain -> summary plus detailed issue scan.
 //! - `GET  /api/events` — filtered, newest-first list (`?actor=&action=&source=&severity=...`).
 //! - `GET  /api/events/search` — the same list with pagination metadata.
@@ -19,6 +20,9 @@ use crate::config::QUERY_LIMIT;
 use crate::error::AppError;
 use crate::store::EventFilter;
 use crate::{now_ms, AppState};
+
+const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
+const IDEMPOTENCY_KEY_BYTES: usize = 64;
 
 /// `POST /events` request body. Every field defaults to empty so a producer can omit any of
 /// them; the entry is still a valid, hash-chained link. `ts`/`seq`/`hash` are NOT accepted
@@ -46,6 +50,7 @@ pub async fn ingest(
     Json(body): Json<IngestBody>,
 ) -> Result<Json<AuditEvent>, AppError> {
     require_ingest(&headers, &state.config.ingest_token)?;
+    let idempotency_key = parse_idempotency_key(&headers)?;
 
     let input = EventInput {
         ts: now_ms(),
@@ -56,11 +61,44 @@ pub async fn ingest(
         detail: body.detail,
         source: body.source,
     };
-    let event = state.store.append(input).await?;
-    if let Err(e) = state.store.record_alert_matches(&event, now_ms()).await {
-        tracing::warn!(error = %e, seq = event.seq, "alert match recording failed");
+    let (event, appended) = match idempotency_key {
+        Some(key) => {
+            let outcome = state.store.append_idempotent(input, key).await?;
+            (outcome.event, outcome.appended)
+        }
+        None => (state.store.append(input).await?, true),
+    };
+    if appended {
+        if let Err(e) = state.store.record_alert_matches(&event, now_ms()).await {
+            tracing::warn!(error = %e, seq = event.seq, "alert match recording failed");
+        }
     }
     Ok(Json(event))
+}
+
+fn parse_idempotency_key(headers: &HeaderMap) -> Result<Option<String>, AppError> {
+    let mut values = headers.get_all(IDEMPOTENCY_KEY_HEADER).iter();
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(AppError::InvalidRequest(
+            "Idempotency-Key must be sent exactly once".to_string(),
+        ));
+    }
+    let key = value.to_str().map_err(|_| {
+        AppError::InvalidRequest("Idempotency-Key must contain visible ASCII".to_string())
+    })?;
+    let valid = key.len() == IDEMPOTENCY_KEY_BYTES
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    if !valid {
+        return Err(AppError::InvalidRequest(
+            "Idempotency-Key must be exactly 64 lowercase hexadecimal characters".to_string(),
+        ));
+    }
+    Ok(Some(key.to_string()))
 }
 
 /// `GET /api/verify` response — `first_broken_seq` is omitted when the chain is intact.

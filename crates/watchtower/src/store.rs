@@ -2,21 +2,25 @@
 //!
 //! `Store` is a small trait with an in-memory and a PostgreSQL implementation, mirroring
 //! the keystone/keyward seam: handlers depend only on the trait, so a FusionDB-backed store
-//! can drop in later. The PostgreSQL layer uses ONLY portable standard SQL (TEXT/BIGINT,
-//! PRIMARY KEY/NOT NULL, parameterized queries, `lower(..) LIKE ..`, plain indexes) and
-//! runtime queries (no compile-time macros), so the build needs NO database and the same
-//! statements later run unchanged on FusionDB over pgwire.
+//! can drop in later. The PostgreSQL data model and queries use portable primitives (TEXT/BIGINT,
+//! PRIMARY KEY/NOT NULL, parameterized queries, `lower(..) LIKE ..`, plain indexes) and runtime
+//! queries (no compile-time macros), so the build needs NO database. Cross-process append
+//! serialization intentionally uses PostgreSQL's transaction advisory lock; another pgwire
+//! backend must provide an equivalent transaction-scoped global writer primitive.
 //!
 //! INVARIANT — append-only & single-writer: there is NO update or delete code path. The
-//! only mutation is [`Store::append`], which is serialized (the in-memory store behind its
-//! `Mutex`; the Postgres store behind a process-wide serial guard + a DB transaction) so the
-//! chain head is read, extended, and written atomically and the chain stays well-defined.
+//! only audit-event mutation is [`Store::append`], which is serialized (the in-memory store
+//! behind its `Mutex`; the Postgres store behind a transaction-scoped database advisory lock)
+//! so the chain head is read, extended, and written atomically and the chain stays well-defined.
+//! Idempotency mappings are additive and are committed in the same boundary as their event.
 //! Production additionally grants the audit DB user only INSERT/SELECT, so even a compromised
 //! service cannot rewrite history.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::alerts::{make_alert_match, AlertMatch, AlertRule};
@@ -27,8 +31,20 @@ use crate::merkle::Checkpoint;
 /// Storage failure surfaced to the handler layer (mapped to a 500 `server_error`).
 #[derive(Debug, Error)]
 pub enum StoreError {
+    #[error("idempotency key was already used for a different event")]
+    IdempotencyConflict,
+
     #[error("store error: {0}")]
     Backend(String),
+}
+
+/// Result of an idempotent append attempt.
+#[derive(Clone, Debug)]
+pub struct AppendOutcome {
+    /// The newly committed event, or the original event when the key was replayed.
+    pub event: AuditEvent,
+    /// `true` only when this call extended the audit chain.
+    pub appended: bool,
 }
 
 /// Filters for `GET /api/events` and the dashboard timeline.
@@ -119,6 +135,15 @@ pub trait Store: Send + Sync {
     /// event. The single-writer guarantee lives here.
     async fn append(&self, input: EventInput) -> Result<AuditEvent, StoreError>;
 
+    /// Append once for a stable producer key. The key mapping and event append share one atomic
+    /// boundary. Replaying the same key + event content returns the original event with
+    /// `appended=false`; reusing a key for different content fails closed.
+    async fn append_idempotent(
+        &self,
+        input: EventInput,
+        key: String,
+    ) -> Result<AppendOutcome, StoreError>;
+
     /// Every event ordered by `seq` ascending — the input to [`crate::chain::verify_chain`].
     async fn all_events(&self) -> Result<Vec<AuditEvent>, StoreError>;
 
@@ -157,12 +182,24 @@ pub trait Store: Send + Sync {
 // In-memory store (the default; keeps the whole service database-free for dev + tests).
 // --------------------------------------------------------------------------------------
 
-/// In-memory `Store`. The `Mutex<Vec<_>>` IS the serial guard: every append takes the lock,
-/// reads the head, seals, and pushes — so appends are strictly serialized and the vector is
-/// always ordered by `seq` ascending.
+#[derive(Clone, Debug)]
+struct IdempotencyRecord {
+    request_hash: String,
+    event_seq: i64,
+}
+
+#[derive(Default)]
+struct InMemoryAuditState {
+    events: Vec<AuditEvent>,
+    idempotency_keys: HashMap<String, IdempotencyRecord>,
+}
+
+/// In-memory `Store`. The single audit-state mutex is the serial guard: every append takes the
+/// lock, reads the head, seals, and pushes. Idempotency key claims live in that same critical
+/// section, so a key can never be visible without its event or vice versa.
 #[derive(Default)]
 pub struct InMemoryStore {
-    events: Mutex<Vec<AuditEvent>>,
+    audit: Mutex<InMemoryAuditState>,
     /// Sealed Merkle checkpoints. Separate lock from `events`: sealing/listing checkpoints never
     /// contends with the append critical section, and reads never block appends.
     checkpoints: Mutex<Vec<Checkpoint>>,
@@ -183,23 +220,78 @@ impl Store for InMemoryStore {
     async fn append(&self, input: EventInput) -> Result<AuditEvent, StoreError> {
         // The std `Mutex` is fine here: the whole critical section is synchronous (no `.await`
         // inside), so the guard is never held across a yield point.
-        let mut events = self.events.lock().expect("events lock poisoned");
-        let (seq, prev_hash) = match events.last() {
+        let mut audit = self.audit.lock().expect("audit state lock poisoned");
+        let (seq, prev_hash) = match audit.events.last() {
             Some(head) => (head.seq + 1, head.hash.clone()),
             None => (1, GENESIS_HASH_HEX.to_string()),
         };
         let event = input.seal(seq, prev_hash);
-        events.push(event.clone());
+        audit.events.push(event.clone());
         Ok(event)
     }
 
+    async fn append_idempotent(
+        &self,
+        input: EventInput,
+        key: String,
+    ) -> Result<AppendOutcome, StoreError> {
+        let key_hash = idempotency_key_hash(&input.source, &key);
+        let request_hash = idempotency_request_hash(&input);
+        let mut audit = self.audit.lock().expect("audit state lock poisoned");
+
+        if let Some(record) = audit.idempotency_keys.get(&key_hash).cloned() {
+            if record.request_hash != request_hash {
+                return Err(StoreError::IdempotencyConflict);
+            }
+            let event = audit
+                .events
+                .iter()
+                .find(|event| event.seq == record.event_seq)
+                .cloned()
+                .ok_or_else(|| {
+                    StoreError::Backend(format!(
+                        "idempotency mapping references missing event seq {}",
+                        record.event_seq
+                    ))
+                })?;
+            return Ok(AppendOutcome {
+                event,
+                appended: false,
+            });
+        }
+
+        let (seq, prev_hash) = match audit.events.last() {
+            Some(head) => (head.seq + 1, head.hash.clone()),
+            None => (1, GENESIS_HASH_HEX.to_string()),
+        };
+        let event = input.seal(seq, prev_hash);
+        audit.events.push(event.clone());
+        audit.idempotency_keys.insert(
+            key_hash,
+            IdempotencyRecord {
+                request_hash,
+                event_seq: event.seq,
+            },
+        );
+        Ok(AppendOutcome {
+            event,
+            appended: true,
+        })
+    }
+
     async fn all_events(&self) -> Result<Vec<AuditEvent>, StoreError> {
-        Ok(self.events.lock().expect("events lock poisoned").clone())
+        Ok(self
+            .audit
+            .lock()
+            .expect("audit state lock poisoned")
+            .events
+            .clone())
     }
 
     async fn query(&self, filter: &EventFilter) -> Result<Vec<AuditEvent>, StoreError> {
-        let events = self.events.lock().expect("events lock poisoned");
-        let mut out: Vec<AuditEvent> = events
+        let audit = self.audit.lock().expect("audit state lock poisoned");
+        let mut out: Vec<AuditEvent> = audit
+            .events
             .iter()
             .rev() // newest first
             .filter(|e| filter.matches(e))
@@ -212,8 +304,8 @@ impl Store for InMemoryStore {
     }
 
     async fn count(&self, filter: &EventFilter) -> Result<usize, StoreError> {
-        let events = self.events.lock().expect("events lock poisoned");
-        Ok(events.iter().filter(|e| filter.matches(e)).count())
+        let audit = self.audit.lock().expect("audit state lock poisoned");
+        Ok(audit.events.iter().filter(|e| filter.matches(e)).count())
     }
 
     async fn insert_checkpoint(&self, checkpoint: Checkpoint) -> Result<(), StoreError> {
@@ -290,16 +382,51 @@ impl Store for InMemoryStore {
     }
 }
 
+fn hash_fields(domain: &[u8], fields: &[&str]) -> String {
+    let mut hash = Sha256::new();
+    hash.update((domain.len() as u64).to_be_bytes());
+    hash.update(domain);
+    for field in fields {
+        hash.update((field.len() as u64).to_be_bytes());
+        hash.update(field.as_bytes());
+    }
+    hex::encode(hash.finalize())
+}
+
+/// Hash producer keys before storage so opaque credentials or identifiers never become database
+/// lookup material in plaintext.
+fn idempotency_key_hash(source: &str, key: &str) -> String {
+    hash_fields(b"watchtower:idempotency-key:v1", &[source, key])
+}
+
+/// Bind a key to producer-controlled event content. `ts` is intentionally excluded because the
+/// server assigns a fresh wall-clock value on every HTTP attempt; a replay must return the
+/// timestamp of the original event.
+fn idempotency_request_hash(input: &EventInput) -> String {
+    hash_fields(
+        b"watchtower:idempotency-request:v1",
+        &[
+            &input.actor,
+            &input.action,
+            &input.target,
+            &input.severity,
+            &input.detail,
+            &input.source,
+        ],
+    )
+}
+
 // --------------------------------------------------------------------------------------
-// PostgreSQL-backed store (portable: standard SQL, runtime queries, no macros).
+// PostgreSQL-backed store (runtime queries, no compile-time database/macros).
 // --------------------------------------------------------------------------------------
 //
 // Selected at runtime by `WATCHTOWER_STORE=postgres`. The `Store` trait is async, so each method
 // uses sqlx natively and the handlers `.await` it on the serving runtime — there is NO
 // `block_in_place` and NO sync-over-async, so a full-chain read never blocks a worker thread.
-// Appends are serialized by an in-process `tokio::sync::Mutex<()>` guard held across the DB
-// transaction, so the "read head -> seal -> insert" step is the single writer and the chain
-// stays well-defined; reads never take that guard, so they run fully concurrently.
+// Appends are serialized in-process by a `tokio::sync::Mutex<()>` and across processes by a
+// transaction-scoped PostgreSQL advisory lock. The "claim key -> read head -> seal -> insert
+// event + key mapping" sequence is therefore one global writer boundary; reads remain fully
+// concurrent.
 
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::Row;
@@ -315,6 +442,13 @@ pub struct PgStore {
     /// and reads never take it.
     append_guard: tokio::sync::Mutex<()>,
 }
+
+/// Stable database-global lock identity for Watchtower's audit append lane.
+///
+/// Every process using this implementation takes the transaction-scoped lock before it reads the
+/// chain head. It also covers unkeyed appends, so mixed keyed/unkeyed traffic cannot fork the
+/// chain across replicas.
+const POSTGRES_APPEND_LOCK_ID: i64 = 0x5733_4457_4154_4348;
 
 impl PgStore {
     /// Open a pooled connection. Async; call from within a Tokio runtime.
@@ -433,6 +567,25 @@ impl PgStore {
         )
         .execute(&self.pool)
         .await?;
+        // ADDITIVE: permanent, digest-only producer key claims. A claim and its audit event are
+        // inserted in one transaction; no update/delete path exists. `request_hash` rejects
+        // accidental reuse of one key for different producer-controlled event content.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS audit_idempotency_keys (\
+                 key_hash TEXT PRIMARY KEY, \
+                 request_hash TEXT NOT NULL, \
+                 event_seq BIGINT NOT NULL UNIQUE, \
+                 created_at BIGINT NOT NULL\
+             )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_audit_idempotency_event_seq \
+             ON audit_idempotency_keys (event_seq)",
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -451,17 +604,89 @@ impl PgStore {
         })
     }
 
-    async fn append_async(&self, input: EventInput) -> Result<AuditEvent, sqlx::Error> {
-        let mut tx = self.pool.begin().await?;
-        // Read the current head inside the transaction (the serial guard already prevents a
-        // concurrent appender in-process; the transaction bounds the read+write atomically).
+    async fn append_async(
+        &self,
+        input: EventInput,
+        idempotency_key: Option<String>,
+    ) -> Result<AppendOutcome, StoreError> {
+        let key_claim = idempotency_key.map(|key| {
+            (
+                idempotency_key_hash(&input.source, &key),
+                idempotency_request_hash(&input),
+            )
+        });
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+
+        // Unlike the local tokio mutex, this transaction-scoped lock coordinates every PgStore
+        // process using the same database. The next statement gets a fresh READ COMMITTED
+        // snapshot after any previous appender commits, so the observed head is authoritative.
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(POSTGRES_APPEND_LOCK_ID)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+
+        if let Some((key_hash, request_hash)) = &key_claim {
+            let existing = sqlx::query(
+                "SELECT request_hash, event_seq FROM audit_idempotency_keys WHERE key_hash = $1",
+            )
+            .bind(key_hash)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+            if let Some(row) = existing {
+                let stored_request_hash: String = row
+                    .try_get("request_hash")
+                    .map_err(|e| StoreError::Backend(e.to_string()))?;
+                if stored_request_hash != *request_hash {
+                    return Err(StoreError::IdempotencyConflict);
+                }
+                let event_seq: i64 = row
+                    .try_get("event_seq")
+                    .map_err(|e| StoreError::Backend(e.to_string()))?;
+                let event_row = sqlx::query(
+                    "SELECT seq, ts, actor, action, target, severity, detail, source, \
+                            prev_hash, hash \
+                     FROM audit_events WHERE seq = $1",
+                )
+                .bind(event_seq)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| StoreError::Backend(e.to_string()))?
+                .ok_or_else(|| {
+                    StoreError::Backend(format!(
+                        "idempotency mapping references missing event seq {event_seq}"
+                    ))
+                })?;
+                let event = Self::event_from_row(&event_row)
+                    .map_err(|e| StoreError::Backend(e.to_string()))?;
+                tx.commit()
+                    .await
+                    .map_err(|e| StoreError::Backend(e.to_string()))?;
+                return Ok(AppendOutcome {
+                    event,
+                    appended: false,
+                });
+            }
+        }
+
+        // Read and extend the current head inside the same transaction as the optional key claim.
         let head = sqlx::query("SELECT seq, hash FROM audit_events ORDER BY seq DESC LIMIT 1")
             .fetch_optional(&mut *tx)
-            .await?;
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
         let (seq, prev_hash) = match head {
             Some(row) => {
-                let s: i64 = row.try_get("seq")?;
-                let h: String = row.try_get("hash")?;
+                let s: i64 = row
+                    .try_get("seq")
+                    .map_err(|e| StoreError::Backend(e.to_string()))?;
+                let h: String = row
+                    .try_get("hash")
+                    .map_err(|e| StoreError::Backend(e.to_string()))?;
                 (s + 1, h)
             }
             None => (1, GENESIS_HASH_HEX.to_string()),
@@ -483,9 +708,31 @@ impl PgStore {
         .bind(&event.prev_hash)
         .bind(&event.hash)
         .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(event)
+        .await
+        .map_err(|e| StoreError::Backend(e.to_string()))?;
+
+        if let Some((key_hash, request_hash)) = key_claim {
+            sqlx::query(
+                "INSERT INTO audit_idempotency_keys \
+                     (key_hash, request_hash, event_seq, created_at) \
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(key_hash)
+            .bind(request_hash)
+            .bind(event.seq)
+            .bind(event.ts)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        Ok(AppendOutcome {
+            event,
+            appended: true,
+        })
     }
 
     fn checkpoint_from_row(row: &sqlx::postgres::PgRow) -> Result<Checkpoint, sqlx::Error> {
@@ -806,14 +1053,19 @@ impl PgStore {
 #[async_trait]
 impl Store for PgStore {
     async fn append(&self, input: EventInput) -> Result<AuditEvent, StoreError> {
-        // Serial guard: only one append runs the read-head -> insert sequence at a time. The
-        // tokio `Mutex` is held across the transaction `.await` without blocking a worker thread,
-        // and reads never take it — so an append burst can never starve concurrent full-chain
-        // reads or `/healthz`.
+        // The tokio mutex avoids needless same-process database lock contention; append_async's
+        // transaction-scoped advisory lock is the cross-process chain authority.
         let _guard = self.append_guard.lock().await;
-        self.append_async(input)
-            .await
-            .map_err(|e| StoreError::Backend(e.to_string()))
+        Ok(self.append_async(input, None).await?.event)
+    }
+
+    async fn append_idempotent(
+        &self,
+        input: EventInput,
+        key: String,
+    ) -> Result<AppendOutcome, StoreError> {
+        let _guard = self.append_guard.lock().await;
+        self.append_async(input, Some(key)).await
     }
 
     async fn all_events(&self) -> Result<Vec<AuditEvent>, StoreError> {
@@ -872,5 +1124,90 @@ impl Store for PgStore {
         self.recent_alert_matches_async(limit)
             .await
             .map_err(|e| StoreError::Backend(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod idempotency_tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    fn input(source: &str, detail: &str) -> EventInput {
+        EventInput {
+            ts: 100,
+            actor: "u_test".to_string(),
+            action: "message.send".to_string(),
+            target: "room_42".to_string(),
+            severity: "info".to_string(),
+            detail: detail.to_string(),
+            source: source.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn memory_claim_is_atomic_source_scoped_and_payload_bound() {
+        let store = InMemoryStore::new();
+        let key = "c".repeat(64);
+
+        let original = store
+            .append_idempotent(input("murmur", "m_1"), key.clone())
+            .await
+            .unwrap();
+        assert!(original.appended);
+        let mut retried_input = input("murmur", "m_1");
+        retried_input.ts = 999;
+        let replay = store
+            .append_idempotent(retried_input, key.clone())
+            .await
+            .unwrap();
+        assert!(!replay.appended);
+        assert_eq!(replay.event.hash, original.event.hash);
+        assert_eq!(replay.event.seq, original.event.seq);
+
+        let conflict = store
+            .append_idempotent(input("murmur", "m_2"), key.clone())
+            .await;
+        assert!(matches!(conflict, Err(StoreError::IdempotencyConflict)));
+
+        let other_source = store
+            .append_idempotent(input("sluice", "m_2"), key)
+            .await
+            .unwrap();
+        assert!(other_source.appended);
+        assert_eq!(other_source.event.seq, 2);
+        assert_eq!(store.all_events().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn memory_concurrent_retries_have_one_authoritative_event() {
+        let store = Arc::new(InMemoryStore::new());
+        let key = "1".repeat(64);
+        let mut tasks = Vec::new();
+        for _ in 0..32 {
+            let store = Arc::clone(&store);
+            let key = key.clone();
+            tasks.push(tokio::spawn(async move {
+                store
+                    .append_idempotent(input("murmur", "m_concurrent"), key)
+                    .await
+                    .unwrap()
+            }));
+        }
+
+        let mut outcomes = Vec::new();
+        for task in tasks {
+            outcomes.push(task.await.unwrap());
+        }
+        assert_eq!(
+            outcomes.iter().filter(|outcome| outcome.appended).count(),
+            1
+        );
+        assert!(outcomes.iter().all(|outcome| {
+            outcome.event.seq == outcomes[0].event.seq
+                && outcome.event.hash == outcomes[0].event.hash
+                && outcome.event.ts == outcomes[0].event.ts
+        }));
+        assert_eq!(store.all_events().await.unwrap().len(), 1);
     }
 }

@@ -7,7 +7,8 @@
 //!
 //! Endpoints:
 //! - `GET /healthz` — liveness (public)
-//! - `POST /events` — append one event (bearer `AUDIT_INGEST_TOKEN`)
+//! - `POST /events` — append one event (bearer `AUDIT_INGEST_TOKEN`; optional
+//!   producer/source-scoped `Idempotency-Key`)
 //! - `GET /api/verify` — recompute the chain (public read)
 //! - `GET /api/events` — filtered list (public read)
 //! - `GET /api/events/search` / `GET /api/events/export` — paged search + CSV/JSON export

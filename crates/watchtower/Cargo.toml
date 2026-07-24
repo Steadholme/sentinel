@@ -40,9 +40,9 @@ hex = "0.4"
 # Epoch -> UTC components for the dashboard timeline (std only — no formatting feature,
 # no extra C deps). Same crate keyward already pins.
 time = { version = "0.3", default-features = false, features = ["std"] }
-# Portable PostgreSQL data layer. Runtime queries only (sqlx::query/Row) — NO compile-time
-# macros, so the build needs NO database. rustls TLS (no openssl). The same standard-SQL
-# statements later run unchanged on FusionDB over pgwire.
+# PostgreSQL data layer. Runtime queries only (sqlx::query/Row) — NO compile-time macros, so the
+# build needs NO database. rustls TLS (no openssl). Data queries stay portable; append authority
+# uses PostgreSQL's transaction advisory lock and requires an equivalent primitive on FusionDB.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres"] }
 
 [dev-dependencies]
