@@ -104,6 +104,29 @@ async fn ingest_full(
 // --- tests -----------------------------------------------------------------------------
 
 #[tokio::test]
+async fn versioned_stylesheet_is_immutable_and_linked() {
+    let state = build_dev_state();
+    let response = app(state.clone())
+        .oneshot(get("/assets/watchtower-20260908.css"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "text/css; charset=utf-8"
+    );
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "public, max-age=31536000, immutable"
+    );
+
+    let (_, bytes) = call(&state, get("/")).await;
+    let html = String::from_utf8(bytes).unwrap();
+    assert!(html.contains("/assets/watchtower-20260908.css"));
+    assert!(!html.contains("<style"));
+}
+
+#[tokio::test]
 async fn appending_events_builds_a_verifiable_chain() {
     let state = build_dev_state();
 

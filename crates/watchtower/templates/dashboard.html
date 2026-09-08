@@ -1,55 +1,33 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en"{{THEME_ATTR}}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="{{COLOR_SCHEME}}">
   <meta name="robots" content="noindex">
-  <title>Watchtower · Steadholme</title>
-  <style>{{STYLE}}</style>
+  <title>Audit timeline · Watchtower</title>
+  <link rel="stylesheet" href="{{CSS_PATH}}">
 </head>
 <body class="page-watch">
-  <header class="topbar">
-    <div class="topbar__inner">
-      <div class="topbar__lead">
-        <span class="brand brand--sm" aria-label="Steadholme home">
-          <span class="brand__glyph" aria-hidden="true">
-            <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <defs>
-                <linearGradient id="hf-shield-sm" x1="8" y1="4" x2="40" y2="44" gradientUnits="userSpaceOnUse">
-                  <stop stop-color="#818CF8"/>
-                  <stop offset="1" stop-color="#4F46E5"/>
-                </linearGradient>
-              </defs>
-              <path d="M24 4 8 9.5V22c0 11 7 17.4 16 21.5C33 39.4 40 33 40 22V9.5L24 4Z" fill="url(#hf-shield-sm)"/>
-              <rect x="20" y="19" width="8" height="13" rx="1" fill="#fff" fill-opacity="0.92"/>
-              <path d="M20 19v-2.5a4 4 0 0 1 8 0V19" stroke="#fff" stroke-width="2" stroke-opacity="0.92" fill="none"/>
-            </svg>
-          </span>
-          <span class="brand__word">Steadholme</span>
-        </span>
-        <span class="topbar__sep" aria-hidden="true"></span>
-        <span class="topbar__title">Watchtower</span>
+  {{SUITEBAR}}
+  <main class="wt-page">
+    <header class="pagehead">
+      <div class="pagehead__titles">
+        <h1>Audit timeline</h1>
+        <p class="pagehead__sub">{{HEAD_SUB}}</p>
       </div>
-      <div class="topbar__right">{{USERBOX}}</div>
-    </div>
-  </header>
-
-  <main class="console">
-    <div class="console__head">
-      <h1>Audit timeline</h1>
-      <p class="muted">Tamper-evident, hash-chained record of every security-relevant action across the keep.</p>
-    </div>
+      <div class="pagehead__actions">{{HEAD_ACTION}}</div>
+    </header>
 
     <section class="integ {{BADGE_CLASS}}" role="status" aria-live="polite">
-      <span class="integ__icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 6v6c0 5 3.4 8.4 8 10 4.6-1.6 8-5 8-10V6l-8-3Z"/><path d="m9 12 2 2 4-4"/></svg>
-      </span>
+      <span class="integ__icon" aria-hidden="true">{{BADGE_ICON}}</span>
       <div class="integ__body">
         <div class="integ__title">Chain integrity</div>
         <div class="integ__text">{{BADGE_TEXT}}</div>
       </div>
+      <a class="btn btn-secondary btn-sm" href="/api/verify">{{ICON_REFRESH}}Recompute</a>
     </section>
+    {{BANNER}}
 
     <section class="counts">
       <div class="counts__total">
@@ -59,14 +37,20 @@
       <div class="counts__sevs">{{SEVERITY_PILLS}}</div>
     </section>
 
-    <section class="card checkpoints">
-      <div class="checkpoints__head">
-        <div>
-          <h2>Merkle checkpoints</h2>
-          <p class="muted">RFC6962-style roots over the chain prefix — a fast, externally-anchorable tamper-evidence summary. A checkpoint catches a rewrite below its <code>seq</code> even one the live chain re-links cleanly.</p>
+    <section class="card chain-card">
+      <div class="card__head"><h2>Hash chain</h2><span class="card__count">{{CHAIN_COUNT}}</span></div>
+      <div class="card__pad">
+        <div class="chain">{{CHAIN}}</div>
+        <div class="chain__facts">
+          <span class="chain__formula">hash(n) = SHA256( seq ‖ ts ‖ actor ‖ action ‖ target ‖ severity ‖ detail ‖ source ‖ prev_hash )</span>
+          <span class="chain__headlabel">head</span>{{HEAD_HASH}}
         </div>
-        {{CHECKPOINT_FORM}}
       </div>
+    </section>
+
+    <section class="card checkpoints">
+      <div class="card__head"><h2>Merkle checkpoints</h2><span class="card__count">{{CHECKPOINT_COUNT}}</span></div>
+      <div class="card__caption">RFC 6962 root over the chain prefix · anchorable · catches a rewrite below its seq even when the live chain re-links cleanly</div>
       <div class="table-scroll">
         <table class="timeline checkpoints__table">
           <thead>
@@ -85,19 +69,14 @@
     </section>
 
     <section class="card alerts">
-      <div class="alerts__head">
-        <div>
-          <h2>Alert rules</h2>
-          <p class="muted">Exact-match rules mark future events by actor, action, source, or severity.</p>
-        </div>
-        {{ALERT_FORM}}
-      </div>
+      <div class="card__head"><h2>Alert rules</h2><span class="card__count">{{ALERT_COUNT}}</span></div>
+      {{ALERT_FORM}}
       <div class="table-scroll">
         <table class="timeline alerts__table">
           <thead>
             <tr>
+              <th class="c-name">Name</th>
               <th class="c-time">Created (UTC)</th>
-              <th>Name</th>
               <th>Actor</th>
               <th>Action</th>
               <th>Source</th>
@@ -109,8 +88,8 @@
           </tbody>
         </table>
       </div>
-      <div class="alerts__subhead">
-        <h3>Recent matches</h3>
+      <div class="subhead">
+        <h3>Recent matches</h3><span class="card__count">{{MATCH_COUNT}}</span>
       </div>
       <div class="table-scroll">
         <table class="timeline alerts__table">
@@ -123,6 +102,7 @@
               <th>Action</th>
               <th>Severity</th>
               <th>Source</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -132,7 +112,8 @@
       </div>
     </section>
 
-    <section class="card">
+    <section class="card events">
+      <div class="card__head"><h2>Events</h2><span class="card__count">{{EVENTS_COUNT}}</span></div>
       <form class="filterbar" method="get" action="">
         <div class="filterbar__field">
           <label for="f-actor">Actor</label>
@@ -167,21 +148,21 @@
           <input id="f-limit" type="number" name="limit" value="{{F_LIMIT}}" placeholder="500" autocomplete="off" min="1" max="500">
         </div>
         <div class="filterbar__actions">
-          <button class="btn btn-primary" type="submit">Filter</button>
+          <button class="btn btn-primary" type="submit">{{ICON_FILTER}}Filter</button>
           <a class="btn btn-secondary" href="?">Reset</a>
         </div>
       </form>
 
       <div class="table-meta">
-        <span>{{SHOWING}}</span>
+        <span class="table-meta__showing">{{SHOWING}}</span>
         <span class="table-meta__actions">
-          <a class="btn btn-secondary btn-sm" href="{{EXPORT_CSV}}">CSV</a>
-          <a class="btn btn-secondary btn-sm" href="{{EXPORT_JSON}}">JSON</a>
+          <a class="btn btn-secondary btn-sm" href="{{EXPORT_CSV}}">{{ICON_DOWNLOAD}}CSV</a>
+          <a class="btn btn-secondary btn-sm" href="{{EXPORT_JSON}}">{{ICON_FILE_CODE}}JSON</a>
           {{PAGINATION}}
         </span>
       </div>
       <div class="table-scroll">
-        <table class="timeline">
+        <table class="timeline events-table">
           <thead>
             <tr>
               <th class="c-time">Time (UTC)</th>
@@ -192,6 +173,7 @@
               <th class="c-target">Target</th>
               <th class="c-detail">Detail</th>
               <th class="c-source">Source</th>
+              <th class="c-hash">Hash</th>
             </tr>
           </thead>
           <tbody>
@@ -201,7 +183,11 @@
       </div>
     </section>
 
-    <p class="watch-foot">Steadholme Watchtower · append-only audit spine · <code>GET /api/verify</code> recomputes the full chain</p>
+    <footer class="watch-foot">
+      <span class="watch-foot__lead">Steadholme Watchtower · append-only audit spine · <code>GET /api/verify</code> recomputes the full chain</span>
+      <a href="https://status.w33d.xyz">Status</a>
+      <a href="https://w33d.xyz">All apps</a>
+    </footer>
   </main>
 </body>
 </html>

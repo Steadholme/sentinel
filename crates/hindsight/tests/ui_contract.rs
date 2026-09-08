@@ -903,7 +903,6 @@ fn ui_no_script_remote_asset_inline_handler_or_legacy_marker() {
         let lower = src.to_ascii_lowercase();
         for banned in [
             "<script",
-            "<link",
             "<img",
             "<iframe",
             "<video",
@@ -921,6 +920,21 @@ fn ui_no_script_remote_asset_inline_handler_or_legacy_marker() {
         ] {
             assert!(!lower.contains(banned), "{name} contains `{banned}`");
         }
+        let expected_stylesheet_links = usize::from(matches!(
+            name,
+            "dashboard.html" | "incident.html" | "fragments/error.html"
+        ));
+        assert_eq!(
+            src.matches("<link rel=\"stylesheet\" href=\"[[W33D:STATIC_CSS]]\">")
+                .count(),
+            expected_stylesheet_links,
+            "{name} may reference only the typed local application stylesheet"
+        );
+        assert_eq!(
+            lower.matches("<link").count(),
+            expected_stylesheet_links,
+            "{name} contains an untyped link resource"
+        );
         assert!(
             contains_inline_handler(src).is_none(),
             "{name} contains an inline event handler"
@@ -1035,7 +1049,7 @@ fn ui_error_template_is_full_safe_document() {
         "<meta charset=\"utf-8\">".to_string(),
         "name=\"viewport\"".to_string(),
         "<title>[[W33D:DOCUMENT_TITLE_TEXT]]</title>".to_string(),
-        "<style>[[W33D:STATIC_CSS]]</style>".to_string(),
+        "<link rel=\"stylesheet\" href=\"[[W33D:STATIC_CSS]]\">".to_string(),
         "hd-skip".to_string(),
         slot("TOPBAR_FRAGMENT"),
         "<main".to_string(),

@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en"{{THEME_ATTR}}>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="{{COLOR_SCHEME}}">
+  <meta name="robots" content="noindex">
+  <title>Event {{SEQ}} · Watchtower</title>
+  <link rel="stylesheet" href="{{CSS_PATH}}">
+</head>
+<body class="page-watch">
+  {{SUITEBAR}}
+  <main class="wt-page wt-narrow">
+    <nav class="crumb" aria-label="Breadcrumb"><a href="/">Audit timeline</a><span class="crumb__sep">/</span><span class="crumb__here">seq {{SEQ}}</span></nav>
+    <header class="pagehead">
+      <div class="pagehead__titles">
+        <h1>Event {{SEQ}}</h1>
+        <p class="pagehead__sub">{{HEAD_SUB}}</p>
+      </div>
+      <div class="pagehead__actions"><a class="btn btn-secondary" href="/">{{ICON_ARROW_LEFT}}Back to the audit timeline</a></div>
+    </header>
+    <div class="tags">{{SEV_PILL}}{{HASH_FULL}}{{VERIFIED_PILL}}</div>
+
+    <section class="card">
+      <div class="card__head"><h2>Chain position</h2></div>
+      <div class="card__pad">
+        <div class="chain">{{CHAIN}}</div>
+      </div>
+      <div class="defs">{{CHAIN_DEFS}}</div>
+    </section>
+
+    <section class="card">
+      <div class="card__head"><h2>Record</h2></div>
+      <div class="defs">{{RECORD_DEFS}}</div>
+    </section>
+
+    <section class="card">
+      <div class="card__head"><h2>Verification</h2></div>
+      <div class="card__pad"><div class="steps">{{STEPS}}</div></div>
+    </section>
+
+    <section class="card">
+      <div class="card__head"><h2>Alert matches</h2><span class="card__count">{{MATCH_COUNT}}</span></div>
+      <div class="defs">{{MATCH_DEFS}}</div>
+    </section>
+
+    <footer class="watch-foot">
+      <span class="watch-foot__lead">Steadholme Watchtower · append-only audit spine · <code>GET /api/verify</code> recomputes the full chain</span>
+      <a href="https://status.w33d.xyz">Status</a>
+      <a href="https://w33d.xyz">All apps</a>
+    </footer>
+  </main>
+</body>
+</html>

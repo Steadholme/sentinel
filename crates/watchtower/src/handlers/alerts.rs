@@ -55,7 +55,24 @@ pub async fn create_rule(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    let email = require_admin_sso(&headers, &state.config.admin_emails)?;
+    // Browser form posts get the HTML error document; API clients keep the JSON envelope.
+    let is_form = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| ct.starts_with("application/x-www-form-urlencoded"))
+        .unwrap_or(false);
+    match create_rule_inner(state, &headers, body).await {
+        Err(err) if is_form => Ok(crate::handlers::dashboard::form_error(&headers, &err)),
+        other => other,
+    }
+}
+
+async fn create_rule_inner(
+    state: AppState,
+    headers: &HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let email = require_admin_sso(headers, &state.config.admin_emails)?;
     let content_type = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -63,7 +80,7 @@ pub async fn create_rule(
     let is_form = content_type.starts_with("application/x-www-form-urlencoded");
     let body_fields = parse_body(&body, is_form)?;
 
-    let presented = header_csrf(&headers).or(body_fields.csrf.as_deref());
+    let presented = header_csrf(headers).or(body_fields.csrf.as_deref());
     require_csrf(presented, &state.config.ingest_token, &email)?;
 
     let created_at = now_ms();

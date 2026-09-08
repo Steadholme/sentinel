@@ -74,7 +74,24 @@ pub async fn create(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    let email = require_admin_sso(&headers, &state.config.admin_emails)?;
+    // Browser form posts get the HTML error document; API clients keep the JSON envelope.
+    let is_form = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| ct.starts_with("application/x-www-form-urlencoded"))
+        .unwrap_or(false);
+    match create_inner(state, &headers, body).await {
+        Err(err) if is_form => Ok(crate::handlers::dashboard::form_error(&headers, &err)),
+        other => other,
+    }
+}
+
+async fn create_inner(
+    state: AppState,
+    headers: &HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let email = require_admin_sso(headers, &state.config.admin_emails)?;
 
     let content_type = headers
         .get(header::CONTENT_TYPE)
@@ -82,7 +99,7 @@ pub async fn create(
         .unwrap_or("");
     let is_form = content_type.starts_with("application/x-www-form-urlencoded");
 
-    let presented = header_csrf(&headers).or_else(|| extract_csrf(&body, is_form));
+    let presented = header_csrf(headers).or_else(|| extract_csrf(&body, is_form));
     require_csrf(presented.as_deref(), &state.config.ingest_token, &email)?;
 
     let events = state.store.all_events().await?;

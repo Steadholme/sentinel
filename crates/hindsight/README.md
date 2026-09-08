@@ -101,3 +101,7 @@ cargo test --all-targets
 The PostgreSQL concurrency and migration contract tests require a dedicated disposable test DSN.
 Browser, accessibility, response-header, and live source probes are release gates for the joint
 Sentinel deployment rather than substitutes for the Rust contract suite.
+
+## Presentation v2 (2026-09-08)
+
+`static/service.css` restyled to the Steadholme neutral system with the sienna accent (Figma `uf3oBCl3MUWyxGmD5tFn8t`): suite bar, Window Gate, the three source lanes with channel marks (square / circle / diamond), boundedness rules, operator margin. Templates, markers, copy and the K3 UI contract are unchanged; the stylesheet is served from `/assets/hindsight-20260908.css`.

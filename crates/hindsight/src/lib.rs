@@ -60,6 +60,7 @@ pub fn app(state: AppState) -> Router {
     handlers::validate_templates().expect("Hindsight static template contract invalid");
     Router::new()
         .route("/healthz", get(handlers::health::healthz))
+        .route(handlers::APP_CSS_PATH, get(handlers::app_css_asset))
         .route("/", get(handlers::timeline::dashboard))
         .route("/incident/{id}", get(handlers::timeline::incident))
         .route("/api/incidents", post(handlers::timeline::open_incident))
@@ -189,22 +190,30 @@ async fn response_security(request: Request, next: Next) -> Response {
             *request.method(),
             axum::http::Method::GET | axum::http::Method::HEAD
         );
+    let static_asset_candidate = request.uri().path() == handlers::APP_CSS_PATH
+        && matches!(
+            *request.method(),
+            axum::http::Method::GET | axum::http::Method::HEAD
+        );
     let mut response = next.run(request).await;
     let health = health_candidate && response.status().is_success();
+    let static_asset = static_asset_candidate && response.status().is_success();
     let headers = response.headers_mut();
-    headers.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static(if health {
-            "no-store"
-        } else {
-            "private, no-store"
-        }),
-    );
+    if !static_asset {
+        headers.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static(if health {
+                "no-store"
+            } else {
+                "private, no-store"
+            }),
+        );
+    }
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
-    if !health {
+    if !health && !static_asset {
         headers.insert(
             header::REFERRER_POLICY,
             HeaderValue::from_static("no-referrer"),
@@ -213,7 +222,7 @@ async fn response_security(request: Request, next: Next) -> Response {
         headers.insert(
             header::CONTENT_SECURITY_POLICY,
             HeaderValue::from_static(
-                "default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+                "default-src 'none'; style-src 'self'; font-src data:; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
             ),
         );
     }

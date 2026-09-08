@@ -206,3 +206,7 @@ Watchtower 已具备成为审计骨干的全部能力。下一步把内网生产
 
 > 注意：本服务此刻**不主动**向任何生产者发起调用，也未在 keystone / sluice 中加入任何写审计的代码 ——
 > 上述接线是**下一步**，此处仅记录接缝。
+
+## 仪表盘 v2（2026-09-08）
+
+按 Figma 设计（`uf3oBCl3MUWyxGmD5tFn8t`）重做的 SSO 仪表盘：Steadholme 中性系统 + 赭褐 accent。`GET /` = 审计时间线（IntegrityBand 链完整性 → 事件计数与 severity pill → 哈希链区块 → Merkle 检查点 → 告警规则与最近命中 → 事件表），新增 `GET /event/{seq}`（单条记录：链位置、字段、验证步骤、命中的规则）；浏览器表单提交出错时返回 HTML 状态页（API 仍为 JSON envelope）。样式资产 `/assets/watchtower-20260908.css`（Odyssey + `static/service.css`），支持 `__Secure-theme` 暗色。

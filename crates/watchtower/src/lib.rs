@@ -14,6 +14,7 @@
 //! - `GET /api/events/search` / `GET /api/events/export` — paged search + CSV/JSON export
 //! - `GET /api/alert-rules` / `POST /api/alert-rules` — alert rules (create is SSO + CSRF)
 //! - `GET /api/alerts` — append-only alert match markers
+//! - `GET /event/{seq}` — one audit record with chain position + verification (SSO dashboard)
 //! - `GET /` — SSO dashboard (gateway-authenticated; registered as the fallback so the
 //!   gateway-prefixed `/watchtower` path renders it too)
 
@@ -53,6 +54,10 @@ pub struct AppState {
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(handlers::health::healthz))
+        .route(
+            handlers::dashboard::APP_CSS_PATH,
+            get(handlers::dashboard::app_css_asset),
+        )
         .route("/events", post(handlers::events::ingest))
         .route("/api/verify", get(handlers::events::verify))
         .route("/api/events", get(handlers::events::list))
@@ -65,6 +70,7 @@ pub fn app(state: AppState) -> Router {
             get(handlers::alerts::list_rules).post(handlers::alerts::create_rule),
         )
         .route("/api/alerts", get(handlers::alerts::list_matches))
+        .route("/event/{seq}", get(handlers::dashboard::event_record))
         .fallback(get(handlers::dashboard::dashboard))
         .with_state(state)
 }

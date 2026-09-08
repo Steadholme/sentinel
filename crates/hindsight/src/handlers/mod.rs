@@ -5,6 +5,9 @@ pub mod timeline;
 
 use std::sync::OnceLock;
 
+use axum::http::{header, HeaderValue};
+use axum::response::{IntoResponse, Response};
+
 use crate::error::ErrorCondition;
 use crate::view_contract::{
     token, ComposeError, Composer, EscapedText, ProductRelativePath, RenderedFragment, Slot,
@@ -12,6 +15,7 @@ use crate::view_contract::{
 };
 
 pub const SERVICE_CSS: &str = include_str!("../../static/service.css");
+pub const APP_CSS_PATH: &str = "/assets/hindsight-20260908.css";
 
 static APP_CSS: OnceLock<String> = OnceLock::new();
 
@@ -24,6 +28,25 @@ pub fn app_css() -> &'static str {
             css
         })
         .as_str()
+}
+
+/// Long-lived, content-versioned Hindsight stylesheet.
+pub async fn app_css_asset() -> Response {
+    let mut response = app_css().into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/css; charset=utf-8"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    response
 }
 
 pub fn validate_templates() -> Result<(), ComposeError> {

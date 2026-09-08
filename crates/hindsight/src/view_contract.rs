@@ -1365,7 +1365,7 @@ pub struct StaticCssValue(&'static str);
 
 impl StaticCssValue {
     pub(crate) fn application() -> Self {
-        Self(crate::handlers::app_css())
+        Self(crate::handlers::APP_CSS_PATH)
     }
 }
 
@@ -1929,7 +1929,7 @@ fn validate_slot_value(spec: SlotSpec, value: &SlotValue) -> Result<(), ComposeE
         SlotValue::ProductPath(_) => (spec.kind == SlotKind::ProductPath, false),
         SlotValue::TrustedStaticUrl(_) => (spec.kind == SlotKind::TrustedStaticUrl, false),
         SlotValue::StaticCss(value) => (
-            spec.kind == SlotKind::StaticCss && std::ptr::eq(value.0, crate::handlers::app_css()),
+            spec.kind == SlotKind::StaticCss && value.0 == crate::handlers::APP_CSS_PATH,
             value.0.is_empty(),
         ),
         SlotValue::Fragment(value) => (
