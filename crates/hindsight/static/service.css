@@ -427,3 +427,31 @@
     transition:none !important; animation:none !important; scroll-behavior:auto !important;
   }
 }
+
+/* ==========================================================================
+   System dark. The Figma file carries a dark incident comparator, but this
+   crate shipped light tokens only and every template declared
+   `color-scheme: light`, so the dark design was unreachable. The frozen UI
+   contract pins `<html lang="en">` with no theme attribute, so a cookie-driven
+   theme is not available here — `prefers-color-scheme` needs no attribute and
+   respects the viewer's system setting. An explicit data-theme="light" still
+   wins if one is ever added.
+
+   Neutrals match the rest of the v2 estate; the sienna accent is lifted for
+   contrast on a dark ground and the three lane colours keep their hue.
+   ========================================================================== */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --accent:#d98b5a; --accent-2:#e5a173; --accent-ink:#f0b892;
+    --accent-soft:#3a2317; --accent-soft-2:#5c3a25; --ring:rgba(217,139,90,.38);
+    --brand:var(--accent); --brand-soft:var(--accent-soft);
+    --bg:#0d1117; --bg-2:#0b0f14; --surface:#161b22; --surface-2:#11161d; --surface-3:#1c2129;
+    --border:#30363d; --border-2:#484f58; --hairline:#262c34;
+    --ink:#e6edf3; --ink-2:#b1bac4; --ink-3:#8b949e; --ink-4:#6e7681;
+    --frame-rule:#b1bac4; --grid-line:transparent;
+    --lane-audit:#d98b5a; --lane-audit-soft:#3a2317;
+    --lane-log:#5aa9dd; --lane-log-soft:#12293a;
+    --lane-metric:#a78bfa; --lane-metric-soft:#2b2151;
+    --sh-xs:0 1px 2px rgba(0,0,0,.34); --sh-md:0 6px 20px rgba(0,0,0,.45);
+  }
+}
