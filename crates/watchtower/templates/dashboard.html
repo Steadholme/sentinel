@@ -8,16 +8,17 @@
   <title>Audit timeline · Watchtower</title>
   <link rel="stylesheet" href="{{CSS_PATH}}">
 </head>
-<body class="page-watch">
+<body class="page-v2">
+  <a class="skip-link" href="#main">Skip to the audit timeline</a>
   {{SUITEBAR}}
-  <main class="wt-page">
-    <header class="pagehead">
+  <main class="v2-page" id="main" tabindex="-1">
+    <div class="pagehead">
       <div class="pagehead__titles">
         <h1>Audit timeline</h1>
         <p class="pagehead__sub">{{HEAD_SUB}}</p>
       </div>
       <div class="pagehead__actions">{{HEAD_ACTION}}</div>
-    </header>
+    </div>
 
     <section class="integ {{BADGE_CLASS}}" role="status" aria-live="polite">
       <span class="integ__icon" aria-hidden="true">{{BADGE_ICON}}</span>
@@ -183,9 +184,10 @@
       </div>
     </section>
 
-    <footer class="watch-foot">
-      <span class="watch-foot__lead">Steadholme Watchtower · append-only audit spine · <code>GET /api/verify</code> recomputes the full chain</span>
+    <footer class="v2-foot">
+      <span class="v2-foot__lead">Steadholme · Watchtower · audit.w33d.xyz</span>
       <a href="https://status.w33d.xyz">Status</a>
+      <a href="https://access.w33d.xyz">Access</a>
       <a href="https://w33d.xyz">All apps</a>
     </footer>
   </main>

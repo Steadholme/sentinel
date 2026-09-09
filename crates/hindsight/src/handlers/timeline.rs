@@ -474,7 +474,7 @@ async fn render_dashboard(
         }
         Err(_) => (SectionState::Unavailable, Vec::new()),
     };
-    let topbar = render_topbar("Incident comparator", &display_identity(identity), true)?;
+    let topbar = render_topbar("Hindsight", &display_identity(identity), true)?;
     let choices = WINDOW_CHOICES
         .iter()
         .map(|hours| render_window_choice(*hours, *hours == window_hours))
@@ -611,7 +611,7 @@ async fn render_incident(
         Err(_) => (SectionState::Unavailable, Vec::new()),
     };
     let marks = render_operator_marks(&case, &note_rows)?;
-    let topbar = render_topbar("Incident evidence", &display_identity(identity), true)?;
+    let topbar = render_topbar("Hindsight", &display_identity(identity), true)?;
     let channels = render_channels(&snapshot)?;
     let note_form = render_note_form(&case.id, csrf, &note_state)?;
     let resolve_form = if case.lifecycle == IncidentLifecycle::Open {

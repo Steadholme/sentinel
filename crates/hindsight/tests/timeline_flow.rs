@@ -182,7 +182,7 @@ fn valid_post(uri: &str, pairs: &[(&str, &str)]) -> Request<Body> {
 #[tokio::test]
 async fn versioned_stylesheet_is_immutable_and_linked() {
     let (state, _) = empty_state();
-    let response = send(&state, get("/assets/hindsight-20260908.css")).await;
+    let response = send(&state, get("/assets/hindsight-20260909.css")).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         response.headers()[header::CONTENT_TYPE],
@@ -195,7 +195,7 @@ async fn versioned_stylesheet_is_immutable_and_linked() {
 
     let response = send(&state, get_auth("/")).await;
     let html = body(response).await;
-    assert!(html.contains("/assets/hindsight-20260908.css"));
+    assert!(html.contains("/assets/hindsight-20260909.css"));
     assert!(!html.contains("<style"));
 }
 

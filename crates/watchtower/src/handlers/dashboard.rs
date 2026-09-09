@@ -28,7 +28,7 @@ use crate::AppState;
 
 /// Watchtower-only CSS layered after Odyssey's canonical font, tokens, and components.
 const SERVICE_CSS: &str = include_str!("../../static/service.css");
-pub const APP_CSS_PATH: &str = "/assets/watchtower-20260908.css";
+pub const APP_CSS_PATH: &str = "/assets/watchtower-20260909.css";
 static APP_CSS: OnceLock<String> = OnceLock::new();
 
 /// Embedded design system served from [`APP_CSS_PATH`].

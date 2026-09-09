@@ -107,7 +107,7 @@ async fn ingest_full(
 async fn versioned_stylesheet_is_immutable_and_linked() {
     let state = build_dev_state();
     let response = app(state.clone())
-        .oneshot(get("/assets/watchtower-20260908.css"))
+        .oneshot(get("/assets/watchtower-20260909.css"))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -122,7 +122,7 @@ async fn versioned_stylesheet_is_immutable_and_linked() {
 
     let (_, bytes) = call(&state, get("/")).await;
     let html = String::from_utf8(bytes).unwrap();
-    assert!(html.contains("/assets/watchtower-20260908.css"));
+    assert!(html.contains("/assets/watchtower-20260909.css"));
     assert!(!html.contains("<style"));
 }
 

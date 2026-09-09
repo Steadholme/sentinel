@@ -8,9 +8,10 @@
   <title>{{CODE}} · Watchtower</title>
   <link rel="stylesheet" href="{{CSS_PATH}}">
 </head>
-<body class="page-watch">
+<body class="page-v2">
+  <a class="skip-link" href="#main">Skip to the message</a>
   {{SUITEBAR}}
-  <main class="wt-page wt-narrow">
+  <main class="v2-page v2-page--narrow" id="main" tabindex="-1">
     <div class="status-wrap">
       <section class="status-tile">
         <div class="status-tile__code">{{CODE}}</div>
@@ -19,6 +20,13 @@
         <div><a class="btn btn-secondary" href="/">{{ICON_ARROW_LEFT}}Back to the audit timeline</a></div>
       </section>
     </div>
+
+    <footer class="v2-foot">
+      <span class="v2-foot__lead">Steadholme · Watchtower · audit.w33d.xyz</span>
+      <a href="https://status.w33d.xyz">Status</a>
+      <a href="https://access.w33d.xyz">Access</a>
+      <a href="https://w33d.xyz">All apps</a>
+    </footer>
   </main>
 </body>
 </html>

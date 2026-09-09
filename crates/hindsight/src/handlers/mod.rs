@@ -15,7 +15,7 @@ use crate::view_contract::{
 };
 
 pub const SERVICE_CSS: &str = include_str!("../../static/service.css");
-pub const APP_CSS_PATH: &str = "/assets/hindsight-20260908.css";
+pub const APP_CSS_PATH: &str = "/assets/hindsight-20260909.css";
 
 static APP_CSS: OnceLock<String> = OnceLock::new();
 
@@ -53,8 +53,13 @@ pub fn validate_templates() -> Result<(), ComposeError> {
     Composer::validate_all_templates()
 }
 
+/// The suite bar shared by both demuxed hosts of this deployable.
+///
+/// `brand_tagline` fills the frozen `TOPBAR_PAGE_TITLE_TEXT` slot, which the v2 shell renders as
+/// the second line of the wordmark (`Steadholme` / `Hindsight`) rather than as a separate title
+/// chip: the surface pill already names the surface and the page head already carries the h1.
 pub fn render_topbar(
-    page_title: &str,
+    brand_tagline: &str,
     gateway_context: &str,
     authenticated: bool,
 ) -> Result<RenderedFragment, ComposeError> {
@@ -63,7 +68,7 @@ pub fn render_topbar(
         vec![
             (
                 Slot::TopbarPageTitleText,
-                SlotValue::Text(EscapedText::new(page_title)),
+                SlotValue::Text(EscapedText::new(brand_tagline)),
             ),
             (
                 Slot::GatewayContextText,
@@ -100,9 +105,9 @@ pub(crate) fn render_error_document(
     let topbar = render_topbar(
         "Hindsight",
         if authenticated_gateway_context {
-            "Authenticated gateway context"
+            "Gateway session"
         } else {
-            "Authentication context unavailable"
+            "No gateway session"
         },
         authenticated_gateway_context,
     )?;

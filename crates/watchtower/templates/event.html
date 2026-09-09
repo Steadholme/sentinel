@@ -8,17 +8,18 @@
   <title>Event {{SEQ}} · Watchtower</title>
   <link rel="stylesheet" href="{{CSS_PATH}}">
 </head>
-<body class="page-watch">
+<body class="page-v2">
+  <a class="skip-link" href="#main">Skip to the event record</a>
   {{SUITEBAR}}
-  <main class="wt-page wt-narrow">
+  <main class="v2-page v2-page--narrow" id="main" tabindex="-1">
     <nav class="crumb" aria-label="Breadcrumb"><a href="/">Audit timeline</a><span class="crumb__sep">/</span><span class="crumb__here">seq {{SEQ}}</span></nav>
-    <header class="pagehead">
+    <div class="pagehead">
       <div class="pagehead__titles">
         <h1>Event {{SEQ}}</h1>
         <p class="pagehead__sub">{{HEAD_SUB}}</p>
       </div>
       <div class="pagehead__actions"><a class="btn btn-secondary" href="/">{{ICON_ARROW_LEFT}}Back to the audit timeline</a></div>
-    </header>
+    </div>
     <div class="tags">{{SEV_PILL}}{{HASH_FULL}}{{VERIFIED_PILL}}</div>
 
     <section class="card">
@@ -44,9 +45,10 @@
       <div class="defs">{{MATCH_DEFS}}</div>
     </section>
 
-    <footer class="watch-foot">
-      <span class="watch-foot__lead">Steadholme Watchtower · append-only audit spine · <code>GET /api/verify</code> recomputes the full chain</span>
+    <footer class="v2-foot">
+      <span class="v2-foot__lead">Steadholme · Watchtower · audit.w33d.xyz</span>
       <a href="https://status.w33d.xyz">Status</a>
+      <a href="https://access.w33d.xyz">Access</a>
       <a href="https://w33d.xyz">All apps</a>
     </footer>
   </main>
