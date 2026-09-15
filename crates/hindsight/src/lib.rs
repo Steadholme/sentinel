@@ -26,6 +26,7 @@ pub mod auth;
 pub mod config;
 pub mod error;
 pub mod feeds;
+pub mod gateway_observe;
 pub mod handlers;
 pub mod http;
 pub mod store;
@@ -76,6 +77,12 @@ pub fn app(state: AppState) -> Router {
         .method_not_allowed_fallback(handlers::timeline::method_not_allowed)
         .fallback(handlers::timeline::route_not_found)
         .layer(middleware::from_fn(response_security))
+        // OBSERVATION ONLY — rejects nothing. Records which callers arrive without a gateway
+        // signature so the exempt list is derived from production traffic rather than guessed,
+        // before identity verification is switched on (2026-09-14 audit, finding A).
+        .layer(axum::middleware::from_fn(
+            gateway_observe::observe_gateway_identity,
+        ))
         .with_state(state)
 }
 

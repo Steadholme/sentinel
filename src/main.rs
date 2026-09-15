@@ -14,6 +14,8 @@
 //! standalone. Each surface keeps its OWN database. `healthcheck` subcommand is a dependency-free
 //! host-agnostic loopback `GET /healthz`.
 
+pub mod gateway_observe;
+
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
@@ -53,6 +55,12 @@ async fn main() {
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .fallback(dispatch)
+        // OBSERVATION ONLY — rejects nothing. Records which callers arrive without a gateway
+        // signature so the exempt list is derived from production traffic rather than guessed,
+        // before identity verification is switched on (2026-09-14 audit, finding A).
+        .layer(axum::middleware::from_fn(
+            gateway_observe::observe_gateway_identity,
+        ))
         .with_state(Vhosts { watchtower, rca });
 
     let addr: SocketAddr = bind_addr.parse().expect("invalid BIND_ADDR");
